@@ -84,7 +84,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // DISABLED: Silence detection state
     // private var silenceFrameCount: Int = 0
     // private var audioLevelThreshold: Float = -25.0 // COMMENTED OUT - using VAD instead
-    private var tapFrameCounter: Int = 0 // Debug counter
 
     // DISABLED: VAD properties
     // private var vadManager: VadManager?
@@ -508,19 +507,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 bridgedLog("🎤 Audio converter initialized: \(hwFormat.sampleRate)Hz → \(targetFmt.sampleRate)Hz")
             }
 
-            // Reset tap frame counter for logging
-            self.tapFrameCounter = 0
-
-            // Install tap - RT-SAFE: copy-only, no processing
+            // Install tap - RT-SAFE: copy-only, no processing, NO LOGGING
+            // (Logging from RT audio thread can cause glitches via memory allocation & GCD locks)
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buffer, time in
                 guard let self = self, let spsc = self.spscBuffer else { return }
                 _ = spsc.write(buffer)
-
-                // Log every ~1 second
-                self.tapFrameCounter += 1
-                if self.tapFrameCounter % 47 == 1 {
-                    self.bridgedLog("🎤 Tap buffer #\(self.tapFrameCounter) | frames: \(buffer.frameLength)")
-                }
             }
 
             self.bridgedLog("🎙️🟠 TAP INSTALLED")
