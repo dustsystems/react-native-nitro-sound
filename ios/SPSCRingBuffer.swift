@@ -7,7 +7,8 @@ import AVFoundation
 /// Consumer: worker queue - calls read()
 ///
 /// Design: Pre-allocated contiguous memory with atomic indices using C11 atomics.
-/// Capacity of 64 slots × 1024 samples × 21.3ms = ~1.3 seconds buffer.
+/// Capacity of 64 slots × 8192 samples = ~10 seconds buffer at 48kHz.
+/// samplesPerChunk must be >= actual tap buffer size (iOS gives ~4800 frames).
 ///
 /// Uses C11 atomics (SPSCAtomic.c) for proper memory ordering without SPM dependencies.
 final class SPSCRingBuffer {

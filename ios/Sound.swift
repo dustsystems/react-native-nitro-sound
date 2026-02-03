@@ -485,8 +485,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
 
             // Initialize SPSC buffer for RT-safe audio pipeline
+            // samplesPerChunk must be >= actual tap buffer size (iOS gives ~4800 frames at 48kHz)
             if spscBuffer == nil {
-                spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 1024)
+                spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
             }
             spscBuffer?.reset()
 
@@ -863,8 +864,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// Called when user starts recording (dream recording, day residue, etc.)
     private func startRecordingSession(fileURL: URL) {
         // Create SPSC buffer if not exists
+        // samplesPerChunk must be >= actual tap buffer size (iOS gives ~4800 frames at 48kHz)
         if spscBuffer == nil {
-            spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 1024)
+            spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
         }
         spscBuffer?.reset()
 
