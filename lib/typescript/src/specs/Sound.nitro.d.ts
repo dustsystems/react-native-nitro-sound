@@ -52,17 +52,6 @@ export interface Sound extends HybridObject<{
     startRecorder(): Promise<void>;
     stopRecorder(): Promise<void>;
     /**
-     * Install the recording tap directly (for testing).
-     * Assumes engine is already running.
-     * This is the minimal operation to start receiving audio buffers.
-     */
-    installTap(): Promise<void>;
-    /**
-     * Remove the recording tap directly (for testing).
-     * Keeps engine running, just removes the tap from inputNode.
-     */
-    removeTap(): Promise<void>;
-    /**
      * End the engine session and completely destroy all audio resources.
      * This performs a full teardown:
      * - Ends any active recording segments

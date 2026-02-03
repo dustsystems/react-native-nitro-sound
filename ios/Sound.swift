@@ -524,45 +524,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             promise.reject(withError: RuntimeError.error(withMessage: "Tap installation failed: \(error.localizedDescription)"))
         }
     }
-
-    // MARK: - Public Tap Methods (for testing)
-
-    public func installTap() throws -> Promise<Void> {
-        let promise = Promise<Void>()
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
-                return
-            }
-            self.installTap(promise: promise)
-        }
-
-        return promise
-    }
-
-    public func removeTap() throws -> Promise<Void> {
-        let promise = Promise<Void>()
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
-                return
-            }
-
-            if let engine = self.audioEngine {
-                engine.inputNode.removeTap(onBus: 0)
-                self.bridgedLog("🎙️⚪ TAP REMOVED")
-            } else {
-                self.bridgedLog("⚠️ removeTap: No engine")
-            }
-
-            promise.resolve(withResult: ())
-        }
-
-        return promise
-    }
-
     // MARK: - Debug Helpers
 
     private func logStateSnapshot(context: String) {

@@ -83,22 +83,6 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
-    inline std::shared_ptr<Promise<void>> installTap() override {
-      auto __result = _swiftPart.installTap();
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-      auto __value = std::move(__result.value());
-      return __value;
-    }
-    inline std::shared_ptr<Promise<void>> removeTap() override {
-      auto __result = _swiftPart.removeTap();
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-      auto __value = std::move(__result.value());
-      return __value;
-    }
     inline std::shared_ptr<Promise<void>> endEngineSession() override {
       auto __result = _swiftPart.endEngineSession();
       if (__result.hasError()) [[unlikely]] {

@@ -16,8 +16,6 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   // Methods
   func startRecorder() throws -> Promise<Void>
   func stopRecorder() throws -> Promise<Void>
-  func installTap() throws -> Promise<Void>
-  func removeTap() throws -> Promise<Void>
   func endEngineSession() throws -> Promise<Void>
   func startRecording(maxDurationSeconds: Double) throws -> Promise<Void>
   func stopRecording() throws -> Promise<Void>

@@ -50,14 +50,6 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
-  abstract fun installTap(): Promise<Unit>
-  
-  @DoNotStrip
-  @Keep
-  abstract fun removeTap(): Promise<Unit>
-  
-  @DoNotStrip
-  @Keep
   abstract fun endEngineSession(): Promise<Unit>
   
   @DoNotStrip

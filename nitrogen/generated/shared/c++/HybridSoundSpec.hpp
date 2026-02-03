@@ -60,8 +60,6 @@ namespace margelo::nitro::sound {
       // Methods
       virtual std::shared_ptr<Promise<void>> startRecorder() = 0;
       virtual std::shared_ptr<Promise<void>> stopRecorder() = 0;
-      virtual std::shared_ptr<Promise<void>> installTap() = 0;
-      virtual std::shared_ptr<Promise<void>> removeTap() = 0;
       virtual std::shared_ptr<Promise<void>> endEngineSession() = 0;
       virtual std::shared_ptr<Promise<void>> startRecording(double maxDurationSeconds) = 0;
       virtual std::shared_ptr<Promise<void>> stopRecording() = 0;
