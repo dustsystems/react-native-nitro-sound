@@ -493,6 +493,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Store input format for file writing
             self.workerInputFormat = hwFormat
 
+            // Initialize 16kHz target format for recording
+            self.targetFormat = AVAudioFormat(
+                commonFormat: .pcmFormatFloat32,
+                sampleRate: 16000,
+                channels: 1,
+                interleaved: false
+            )
+
+            // Create converter from hardware format (48kHz) to 16kHz
+            if let targetFmt = self.targetFormat {
+                self.audioConverter = AVAudioConverter(from: hwFormat, to: targetFmt)
+                bridgedLog("🎤 Audio converter initialized: \(hwFormat.sampleRate)Hz → \(targetFmt.sampleRate)Hz")
+            }
+
             // Reset tap frame counter for logging
             self.tapFrameCounter = 0
 
