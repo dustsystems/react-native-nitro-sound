@@ -62,35 +62,15 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
-  abstract fun setVADMode(): Promise<Unit>
+  abstract fun startRecording(maxDurationSeconds: Double): Promise<Unit>
   
   @DoNotStrip
   @Keep
-  abstract fun setManualMode(): Promise<Unit>
-  
-  @DoNotStrip
-  @Keep
-  abstract fun setIdleMode(): Promise<Unit>
-  
-  @DoNotStrip
-  @Keep
-  abstract fun getCurrentMode(): Promise<RecordingMode>
+  abstract fun stopRecording(): Promise<Unit>
   
   @DoNotStrip
   @Keep
   abstract fun isSegmentRecording(): Promise<Boolean>
-  
-  @DoNotStrip
-  @Keep
-  abstract fun startManualSegment(silenceTimeoutSeconds: Double?): Promise<Unit>
-  
-  @DoNotStrip
-  @Keep
-  abstract fun stopManualSegment(): Promise<Unit>
-  
-  @DoNotStrip
-  @Keep
-  abstract fun setVADThreshold(threshold: Double): Promise<Unit>
   
   @DoNotStrip
   @Keep
@@ -197,15 +177,6 @@ abstract class HybridSoundSpec: HybridObject() {
   @Keep
   private fun setSegmentCallback_cxx(callback: Func_void_std__string_std__string_bool_double): Unit {
     val __result = setSegmentCallback(callback)
-    return __result
-  }
-  
-  abstract fun setManualSilenceCallback(callback: () -> Unit): Unit
-  
-  @DoNotStrip
-  @Keep
-  private fun setManualSilenceCallback_cxx(callback: Func_void): Unit {
-    val __result = setManualSilenceCallback(callback)
     return __result
   }
   

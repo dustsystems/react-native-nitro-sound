@@ -14,8 +14,6 @@ namespace margelo::nitro::sound { class HybridSoundSpec; }
 namespace margelo::nitro::sound { struct PlayBackType; }
 // Forward declaration of `PlaybackEndType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlaybackEndType; }
-// Forward declaration of `RecordingMode` to properly resolve imports.
-namespace margelo::nitro::sound { enum class RecordingMode; }
 
 // Forward declarations of Swift defined types
 // Forward declaration of `HybridSoundSpec_cxx` to properly resolve imports.
@@ -25,7 +23,6 @@ namespace NitroSound { class HybridSoundSpec_cxx; }
 #include "HybridSoundSpec.hpp"
 #include "PlayBackType.hpp"
 #include "PlaybackEndType.hpp"
-#include "RecordingMode.hpp"
 #include <NitroModules/Promise.hpp>
 #include <NitroModules/PromiseHolder.hpp>
 #include <NitroModules/Result.hpp>
@@ -99,40 +96,6 @@ namespace margelo::nitro::sound::bridge::swift {
     return Func_void_std__exception_ptr_Wrapper(std::move(value));
   }
   
-  // pragma MARK: std::shared_ptr<Promise<RecordingMode>>
-  /**
-   * Specialized version of `std::shared_ptr<Promise<RecordingMode>>`.
-   */
-  using std__shared_ptr_Promise_RecordingMode__ = std::shared_ptr<Promise<RecordingMode>>;
-  inline std::shared_ptr<Promise<RecordingMode>> create_std__shared_ptr_Promise_RecordingMode__() noexcept {
-    return Promise<RecordingMode>::create();
-  }
-  inline PromiseHolder<RecordingMode> wrap_std__shared_ptr_Promise_RecordingMode__(std::shared_ptr<Promise<RecordingMode>> promise) noexcept {
-    return PromiseHolder<RecordingMode>(std::move(promise));
-  }
-  
-  // pragma MARK: std::function<void(RecordingMode /* result */)>
-  /**
-   * Specialized version of `std::function<void(RecordingMode)>`.
-   */
-  using Func_void_RecordingMode = std::function<void(RecordingMode /* result */)>;
-  /**
-   * Wrapper class for a `std::function<void(RecordingMode / * result * /)>`, this can be used from Swift.
-   */
-  class Func_void_RecordingMode_Wrapper final {
-  public:
-    explicit Func_void_RecordingMode_Wrapper(std::function<void(RecordingMode /* result */)>&& func): _function(std::make_unique<std::function<void(RecordingMode /* result */)>>(std::move(func))) {}
-    inline void call(int result) const noexcept {
-      _function->operator()(static_cast<RecordingMode>(result));
-    }
-  private:
-    std::unique_ptr<std::function<void(RecordingMode /* result */)>> _function;
-  } SWIFT_NONCOPYABLE;
-  Func_void_RecordingMode create_Func_void_RecordingMode(void* _Nonnull swiftClosureWrapper) noexcept;
-  inline Func_void_RecordingMode_Wrapper wrap_Func_void_RecordingMode(Func_void_RecordingMode value) noexcept {
-    return Func_void_RecordingMode_Wrapper(std::move(value));
-  }
-  
   // pragma MARK: std::shared_ptr<Promise<bool>>
   /**
    * Specialized version of `std::shared_ptr<Promise<bool>>`.
@@ -165,21 +128,6 @@ namespace margelo::nitro::sound::bridge::swift {
   Func_void_bool create_Func_void_bool(void* _Nonnull swiftClosureWrapper) noexcept;
   inline Func_void_bool_Wrapper wrap_Func_void_bool(Func_void_bool value) noexcept {
     return Func_void_bool_Wrapper(std::move(value));
-  }
-  
-  // pragma MARK: std::optional<double>
-  /**
-   * Specialized version of `std::optional<double>`.
-   */
-  using std__optional_double_ = std::optional<double>;
-  inline std::optional<double> create_std__optional_double_(const double& value) noexcept {
-    return std::optional<double>(value);
-  }
-  inline bool has_value_std__optional_double_(const std::optional<double>& optional) noexcept {
-    return optional.has_value();
-  }
-  inline double get_std__optional_double_(const std::optional<double>& optional) noexcept {
-    return *optional;
   }
   
   // pragma MARK: std::shared_ptr<Promise<std::string>>
@@ -305,6 +253,21 @@ namespace margelo::nitro::sound::bridge::swift {
     return Func_void_double_Wrapper(std::move(value));
   }
   
+  // pragma MARK: std::optional<double>
+  /**
+   * Specialized version of `std::optional<double>`.
+   */
+  using std__optional_double_ = std::optional<double>;
+  inline std::optional<double> create_std__optional_double_(const double& value) noexcept {
+    return std::optional<double>(value);
+  }
+  inline bool has_value_std__optional_double_(const std::optional<double>& optional) noexcept {
+    return optional.has_value();
+  }
+  inline double get_std__optional_double_(const std::optional<double>& optional) noexcept {
+    return *optional;
+  }
+  
   // pragma MARK: std::optional<bool>
   /**
    * Specialized version of `std::optional<bool>`.
@@ -416,15 +379,6 @@ namespace margelo::nitro::sound::bridge::swift {
   }
   inline Result_std__shared_ptr_Promise_void___ create_Result_std__shared_ptr_Promise_void___(const std::exception_ptr& error) noexcept {
     return Result<std::shared_ptr<Promise<void>>>::withError(error);
-  }
-  
-  // pragma MARK: Result<std::shared_ptr<Promise<RecordingMode>>>
-  using Result_std__shared_ptr_Promise_RecordingMode___ = Result<std::shared_ptr<Promise<RecordingMode>>>;
-  inline Result_std__shared_ptr_Promise_RecordingMode___ create_Result_std__shared_ptr_Promise_RecordingMode___(const std::shared_ptr<Promise<RecordingMode>>& value) noexcept {
-    return Result<std::shared_ptr<Promise<RecordingMode>>>::withValue(value);
-  }
-  inline Result_std__shared_ptr_Promise_RecordingMode___ create_Result_std__shared_ptr_Promise_RecordingMode___(const std::exception_ptr& error) noexcept {
-    return Result<std::shared_ptr<Promise<RecordingMode>>>::withError(error);
   }
   
   // pragma MARK: Result<std::shared_ptr<Promise<bool>>>

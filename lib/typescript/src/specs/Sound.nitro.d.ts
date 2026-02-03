@@ -45,7 +45,6 @@ export interface PlaybackEndType {
 }
 export type PlayBackListener = (playbackMeta: PlayBackType) => void;
 export type PlaybackEndListener = (playbackEndMeta: PlaybackEndType) => void;
-export type RecordingMode = 'idle' | 'manual' | 'vad';
 export interface Sound extends HybridObject<{
     ios: 'swift';
     android: 'kotlin';
@@ -76,26 +75,24 @@ export interface Sound extends HybridObject<{
      * indicator disappears and all audio resources are released.
      */
     endEngineSession(): Promise<void>;
-    setVADMode(): Promise<void>;
-    setManualMode(): Promise<void>;
-    setIdleMode(): Promise<void>;
-    getCurrentMode(): Promise<RecordingMode>;
     /**
-     * Check if a recording segment is actively being recorded.
-     * This is the SOURCE OF TRUTH for recording state - checks if:
-     * 1. A segment file is open (currentSegmentFile != nil)
-     * 2. We're in a recording mode (manual or VAD, not idle)
-     * 3. The audio engine is running with an active input tap
+     * Start recording with a maximum duration.
+     * Recording automatically stops when the duration is reached.
+     * Can be stopped early with stopRecording().
      *
-     * Use this for UI indicators that need to show actual recording status.
-     * Unlike JS-side segmentActive which can become stale, this queries native directly.
-     *
-     * @returns true if actively recording a segment, false otherwise
+     * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
+     */
+    startRecording(maxDurationSeconds: number): Promise<void>;
+    /**
+     * Stop recording early (before max duration is reached).
+     * If no recording is active, this is a no-op.
+     */
+    stopRecording(): Promise<void>;
+    /**
+     * Check if recording is currently active.
+     * @returns true if actively recording, false otherwise
      */
     isSegmentRecording(): Promise<boolean>;
-    startManualSegment(silenceTimeoutSeconds?: number): Promise<void>;
-    stopManualSegment(): Promise<void>;
-    setVADThreshold(threshold: number): Promise<void>;
     startPlayer(uri?: string, httpHeaders?: Record<string, string>): Promise<string>;
     stopPlayer(): Promise<string>;
     pausePlayer(): Promise<string>;
@@ -132,7 +129,6 @@ export interface Sound extends HybridObject<{
     removePlaybackEndListener(): void;
     setLogCallback(callback: (message: string) => void): void;
     setSegmentCallback(callback: (filename: string, filePath: string, isManual: boolean, duration: number) => void): void;
-    setManualSilenceCallback(callback: () => void): void;
     setNextTrackCallback(callback: () => void): void;
     removeNextTrackCallback(): void;
     setPreviousTrackCallback(callback: () => void): void;

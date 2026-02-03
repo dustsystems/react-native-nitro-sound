@@ -58,14 +58,9 @@ namespace margelo::nitro::sound {
     std::shared_ptr<Promise<void>> installTap() override;
     std::shared_ptr<Promise<void>> removeTap() override;
     std::shared_ptr<Promise<void>> endEngineSession() override;
-    std::shared_ptr<Promise<void>> setVADMode() override;
-    std::shared_ptr<Promise<void>> setManualMode() override;
-    std::shared_ptr<Promise<void>> setIdleMode() override;
-    std::shared_ptr<Promise<RecordingMode>> getCurrentMode() override;
+    std::shared_ptr<Promise<void>> startRecording(double maxDurationSeconds) override;
+    std::shared_ptr<Promise<void>> stopRecording() override;
     std::shared_ptr<Promise<bool>> isSegmentRecording() override;
-    std::shared_ptr<Promise<void>> startManualSegment(std::optional<double> silenceTimeoutSeconds) override;
-    std::shared_ptr<Promise<void>> stopManualSegment() override;
-    std::shared_ptr<Promise<void>> setVADThreshold(double threshold) override;
     std::shared_ptr<Promise<std::string>> startPlayer(const std::optional<std::string>& uri, const std::optional<std::unordered_map<std::string, std::string>>& httpHeaders) override;
     std::shared_ptr<Promise<std::string>> stopPlayer() override;
     std::shared_ptr<Promise<std::string>> pausePlayer() override;
@@ -88,7 +83,6 @@ namespace margelo::nitro::sound {
     void removePlaybackEndListener() override;
     void setLogCallback(const std::function<void(const std::string& /* message */)>& callback) override;
     void setSegmentCallback(const std::function<void(const std::string& /* filename */, const std::string& /* filePath */, bool /* isManual */, double /* duration */)>& callback) override;
-    void setManualSilenceCallback(const std::function<void()>& callback) override;
     void setNextTrackCallback(const std::function<void()>& callback) override;
     void removeNextTrackCallback() override;
     void setPreviousTrackCallback(const std::function<void()>& callback) override;

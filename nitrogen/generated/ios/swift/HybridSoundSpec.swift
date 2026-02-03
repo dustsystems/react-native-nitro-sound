@@ -19,14 +19,9 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func installTap() throws -> Promise<Void>
   func removeTap() throws -> Promise<Void>
   func endEngineSession() throws -> Promise<Void>
-  func setVADMode() throws -> Promise<Void>
-  func setManualMode() throws -> Promise<Void>
-  func setIdleMode() throws -> Promise<Void>
-  func getCurrentMode() throws -> Promise<RecordingMode>
+  func startRecording(maxDurationSeconds: Double) throws -> Promise<Void>
+  func stopRecording() throws -> Promise<Void>
   func isSegmentRecording() throws -> Promise<Bool>
-  func startManualSegment(silenceTimeoutSeconds: Double?) throws -> Promise<Void>
-  func stopManualSegment() throws -> Promise<Void>
-  func setVADThreshold(threshold: Double) throws -> Promise<Void>
   func startPlayer(uri: String?, httpHeaders: Dictionary<String, String>?) throws -> Promise<String>
   func stopPlayer() throws -> Promise<String>
   func pausePlayer() throws -> Promise<String>
@@ -49,7 +44,6 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func removePlaybackEndListener() throws -> Void
   func setLogCallback(callback: @escaping (_ message: String) -> Void) throws -> Void
   func setSegmentCallback(callback: @escaping (_ filename: String, _ filePath: String, _ isManual: Bool, _ duration: Double) -> Void) throws -> Void
-  func setManualSilenceCallback(callback: @escaping () -> Void) throws -> Void
   func setNextTrackCallback(callback: @escaping () -> Void) throws -> Void
   func removeNextTrackCallback() throws -> Void
   func setPreviousTrackCallback(callback: @escaping () -> Void) throws -> Void

@@ -19,14 +19,9 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("installTap", &HybridSoundSpec::installTap);
       prototype.registerHybridMethod("removeTap", &HybridSoundSpec::removeTap);
       prototype.registerHybridMethod("endEngineSession", &HybridSoundSpec::endEngineSession);
-      prototype.registerHybridMethod("setVADMode", &HybridSoundSpec::setVADMode);
-      prototype.registerHybridMethod("setManualMode", &HybridSoundSpec::setManualMode);
-      prototype.registerHybridMethod("setIdleMode", &HybridSoundSpec::setIdleMode);
-      prototype.registerHybridMethod("getCurrentMode", &HybridSoundSpec::getCurrentMode);
+      prototype.registerHybridMethod("startRecording", &HybridSoundSpec::startRecording);
+      prototype.registerHybridMethod("stopRecording", &HybridSoundSpec::stopRecording);
       prototype.registerHybridMethod("isSegmentRecording", &HybridSoundSpec::isSegmentRecording);
-      prototype.registerHybridMethod("startManualSegment", &HybridSoundSpec::startManualSegment);
-      prototype.registerHybridMethod("stopManualSegment", &HybridSoundSpec::stopManualSegment);
-      prototype.registerHybridMethod("setVADThreshold", &HybridSoundSpec::setVADThreshold);
       prototype.registerHybridMethod("startPlayer", &HybridSoundSpec::startPlayer);
       prototype.registerHybridMethod("stopPlayer", &HybridSoundSpec::stopPlayer);
       prototype.registerHybridMethod("pausePlayer", &HybridSoundSpec::pausePlayer);
@@ -49,7 +44,6 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("removePlaybackEndListener", &HybridSoundSpec::removePlaybackEndListener);
       prototype.registerHybridMethod("setLogCallback", &HybridSoundSpec::setLogCallback);
       prototype.registerHybridMethod("setSegmentCallback", &HybridSoundSpec::setSegmentCallback);
-      prototype.registerHybridMethod("setManualSilenceCallback", &HybridSoundSpec::setManualSilenceCallback);
       prototype.registerHybridMethod("setNextTrackCallback", &HybridSoundSpec::setNextTrackCallback);
       prototype.registerHybridMethod("removeNextTrackCallback", &HybridSoundSpec::removeNextTrackCallback);
       prototype.registerHybridMethod("setPreviousTrackCallback", &HybridSoundSpec::setPreviousTrackCallback);

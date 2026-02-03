@@ -54,9 +54,6 @@ export interface PlaybackEndType {
 export type PlayBackListener = (playbackMeta: PlayBackType) => void;
 export type PlaybackEndListener = (playbackEndMeta: PlaybackEndType) => void;
 
-// Recording mode type (for getCurrentMode)
-export type RecordingMode = 'idle' | 'manual' | 'vad';
-
 export interface Sound
   extends HybridObject<{ ios: 'swift'; android: 'kotlin' }> {
   // Recording methods (unified AVAudioEngine with speech detection)
@@ -90,32 +87,28 @@ export interface Sound
    */
   endEngineSession(): Promise<void>;
 
-  // Segment mode control (for alarm-based manual recording)
-  setVADMode(): Promise<void>;
-  setManualMode(): Promise<void>;
-  setIdleMode(): Promise<void>;
-  getCurrentMode(): Promise<RecordingMode>;
+  // Simple fixed-duration recording API
 
   /**
-   * Check if a recording segment is actively being recorded.
-   * This is the SOURCE OF TRUTH for recording state - checks if:
-   * 1. A segment file is open (currentSegmentFile != nil)
-   * 2. We're in a recording mode (manual or VAD, not idle)
-   * 3. The audio engine is running with an active input tap
+   * Start recording with a maximum duration.
+   * Recording automatically stops when the duration is reached.
+   * Can be stopped early with stopRecording().
    *
-   * Use this for UI indicators that need to show actual recording status.
-   * Unlike JS-side segmentActive which can become stale, this queries native directly.
-   *
-   * @returns true if actively recording a segment, false otherwise
+   * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
+   */
+  startRecording(maxDurationSeconds: number): Promise<void>;
+
+  /**
+   * Stop recording early (before max duration is reached).
+   * If no recording is active, this is a no-op.
+   */
+  stopRecording(): Promise<void>;
+
+  /**
+   * Check if recording is currently active.
+   * @returns true if actively recording, false otherwise
    */
   isSegmentRecording(): Promise<boolean>;
-
-  // Manual segment control (separate from mode setting)
-  startManualSegment(silenceTimeoutSeconds?: number): Promise<void>;
-  stopManualSegment(): Promise<void>;
-
-  // VAD configuration
-  setVADThreshold(threshold: number): Promise<void>;
 
   // Playback methods
   startPlayer(
@@ -184,9 +177,6 @@ export interface Sound
 
   // Speech segment callback (called when a new segment file is written)
   setSegmentCallback(callback: (filename: string, filePath: string, isManual: boolean, duration: number) => void): void;
-
-  // Manual silence timeout callback (called when 15s of silence detected in manual mode)
-  setManualSilenceCallback(callback: () => void): void;
 
   // Lock screen track navigation callbacks
   setNextTrackCallback(callback: () => void): void;

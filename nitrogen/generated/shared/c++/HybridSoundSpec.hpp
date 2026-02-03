@@ -13,17 +13,14 @@
 #error NitroModules cannot be found! Are you sure you installed NitroModules properly?
 #endif
 
-// Forward declaration of `RecordingMode` to properly resolve imports.
-namespace margelo::nitro::sound { enum class RecordingMode; }
 // Forward declaration of `PlayBackType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlayBackType; }
 // Forward declaration of `PlaybackEndType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlaybackEndType; }
 
 #include <NitroModules/Promise.hpp>
-#include "RecordingMode.hpp"
-#include <optional>
 #include <string>
+#include <optional>
 #include <unordered_map>
 #include "PlayBackType.hpp"
 #include <functional>
@@ -66,14 +63,9 @@ namespace margelo::nitro::sound {
       virtual std::shared_ptr<Promise<void>> installTap() = 0;
       virtual std::shared_ptr<Promise<void>> removeTap() = 0;
       virtual std::shared_ptr<Promise<void>> endEngineSession() = 0;
-      virtual std::shared_ptr<Promise<void>> setVADMode() = 0;
-      virtual std::shared_ptr<Promise<void>> setManualMode() = 0;
-      virtual std::shared_ptr<Promise<void>> setIdleMode() = 0;
-      virtual std::shared_ptr<Promise<RecordingMode>> getCurrentMode() = 0;
+      virtual std::shared_ptr<Promise<void>> startRecording(double maxDurationSeconds) = 0;
+      virtual std::shared_ptr<Promise<void>> stopRecording() = 0;
       virtual std::shared_ptr<Promise<bool>> isSegmentRecording() = 0;
-      virtual std::shared_ptr<Promise<void>> startManualSegment(std::optional<double> silenceTimeoutSeconds) = 0;
-      virtual std::shared_ptr<Promise<void>> stopManualSegment() = 0;
-      virtual std::shared_ptr<Promise<void>> setVADThreshold(double threshold) = 0;
       virtual std::shared_ptr<Promise<std::string>> startPlayer(const std::optional<std::string>& uri, const std::optional<std::unordered_map<std::string, std::string>>& httpHeaders) = 0;
       virtual std::shared_ptr<Promise<std::string>> stopPlayer() = 0;
       virtual std::shared_ptr<Promise<std::string>> pausePlayer() = 0;
@@ -96,7 +88,6 @@ namespace margelo::nitro::sound {
       virtual void removePlaybackEndListener() = 0;
       virtual void setLogCallback(const std::function<void(const std::string& /* message */)>& callback) = 0;
       virtual void setSegmentCallback(const std::function<void(const std::string& /* filename */, const std::string& /* filePath */, bool /* isManual */, double /* duration */)>& callback) = 0;
-      virtual void setManualSilenceCallback(const std::function<void()>& callback) = 0;
       virtual void setNextTrackCallback(const std::function<void()>& callback) = 0;
       virtual void removeNextTrackCallback() = 0;
       virtual void setPreviousTrackCallback(const std::function<void()>& callback) = 0;

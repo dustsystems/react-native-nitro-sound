@@ -205,9 +205,9 @@ open class HybridSoundSpec_cxx {
   }
   
   @inline(__always)
-  public final func setVADMode() -> bridge.Result_std__shared_ptr_Promise_void___ {
+  public final func startRecording(maxDurationSeconds: Double) -> bridge.Result_std__shared_ptr_Promise_void___ {
     do {
-      let __result = try self.__implementation.setVADMode()
+      let __result = try self.__implementation.startRecording(maxDurationSeconds: maxDurationSeconds)
       let __resultCpp = { () -> bridge.std__shared_ptr_Promise_void__ in
         let __promise = bridge.create_std__shared_ptr_Promise_void__()
         let __promiseHolder = bridge.wrap_std__shared_ptr_Promise_void__(__promise)
@@ -224,9 +224,9 @@ open class HybridSoundSpec_cxx {
   }
   
   @inline(__always)
-  public final func setManualMode() -> bridge.Result_std__shared_ptr_Promise_void___ {
+  public final func stopRecording() -> bridge.Result_std__shared_ptr_Promise_void___ {
     do {
-      let __result = try self.__implementation.setManualMode()
+      let __result = try self.__implementation.stopRecording()
       let __resultCpp = { () -> bridge.std__shared_ptr_Promise_void__ in
         let __promise = bridge.create_std__shared_ptr_Promise_void__()
         let __promiseHolder = bridge.wrap_std__shared_ptr_Promise_void__(__promise)
@@ -239,44 +239,6 @@ open class HybridSoundSpec_cxx {
     } catch (let __error) {
       let __exceptionPtr = __error.toCpp()
       return bridge.create_Result_std__shared_ptr_Promise_void___(__exceptionPtr)
-    }
-  }
-  
-  @inline(__always)
-  public final func setIdleMode() -> bridge.Result_std__shared_ptr_Promise_void___ {
-    do {
-      let __result = try self.__implementation.setIdleMode()
-      let __resultCpp = { () -> bridge.std__shared_ptr_Promise_void__ in
-        let __promise = bridge.create_std__shared_ptr_Promise_void__()
-        let __promiseHolder = bridge.wrap_std__shared_ptr_Promise_void__(__promise)
-        __result
-          .then({ __result in __promiseHolder.resolve() })
-          .catch({ __error in __promiseHolder.reject(__error.toCpp()) })
-        return __promise
-      }()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__resultCpp)
-    } catch (let __error) {
-      let __exceptionPtr = __error.toCpp()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__exceptionPtr)
-    }
-  }
-  
-  @inline(__always)
-  public final func getCurrentMode() -> bridge.Result_std__shared_ptr_Promise_RecordingMode___ {
-    do {
-      let __result = try self.__implementation.getCurrentMode()
-      let __resultCpp = { () -> bridge.std__shared_ptr_Promise_RecordingMode__ in
-        let __promise = bridge.create_std__shared_ptr_Promise_RecordingMode__()
-        let __promiseHolder = bridge.wrap_std__shared_ptr_Promise_RecordingMode__(__promise)
-        __result
-          .then({ __result in __promiseHolder.resolve(__result) })
-          .catch({ __error in __promiseHolder.reject(__error.toCpp()) })
-        return __promise
-      }()
-      return bridge.create_Result_std__shared_ptr_Promise_RecordingMode___(__resultCpp)
-    } catch (let __error) {
-      let __exceptionPtr = __error.toCpp()
-      return bridge.create_Result_std__shared_ptr_Promise_RecordingMode___(__exceptionPtr)
     }
   }
   
@@ -296,63 +258,6 @@ open class HybridSoundSpec_cxx {
     } catch (let __error) {
       let __exceptionPtr = __error.toCpp()
       return bridge.create_Result_std__shared_ptr_Promise_bool___(__exceptionPtr)
-    }
-  }
-  
-  @inline(__always)
-  public final func startManualSegment(silenceTimeoutSeconds: bridge.std__optional_double_) -> bridge.Result_std__shared_ptr_Promise_void___ {
-    do {
-      let __result = try self.__implementation.startManualSegment(silenceTimeoutSeconds: silenceTimeoutSeconds.value)
-      let __resultCpp = { () -> bridge.std__shared_ptr_Promise_void__ in
-        let __promise = bridge.create_std__shared_ptr_Promise_void__()
-        let __promiseHolder = bridge.wrap_std__shared_ptr_Promise_void__(__promise)
-        __result
-          .then({ __result in __promiseHolder.resolve() })
-          .catch({ __error in __promiseHolder.reject(__error.toCpp()) })
-        return __promise
-      }()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__resultCpp)
-    } catch (let __error) {
-      let __exceptionPtr = __error.toCpp()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__exceptionPtr)
-    }
-  }
-  
-  @inline(__always)
-  public final func stopManualSegment() -> bridge.Result_std__shared_ptr_Promise_void___ {
-    do {
-      let __result = try self.__implementation.stopManualSegment()
-      let __resultCpp = { () -> bridge.std__shared_ptr_Promise_void__ in
-        let __promise = bridge.create_std__shared_ptr_Promise_void__()
-        let __promiseHolder = bridge.wrap_std__shared_ptr_Promise_void__(__promise)
-        __result
-          .then({ __result in __promiseHolder.resolve() })
-          .catch({ __error in __promiseHolder.reject(__error.toCpp()) })
-        return __promise
-      }()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__resultCpp)
-    } catch (let __error) {
-      let __exceptionPtr = __error.toCpp()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__exceptionPtr)
-    }
-  }
-  
-  @inline(__always)
-  public final func setVADThreshold(threshold: Double) -> bridge.Result_std__shared_ptr_Promise_void___ {
-    do {
-      let __result = try self.__implementation.setVADThreshold(threshold: threshold)
-      let __resultCpp = { () -> bridge.std__shared_ptr_Promise_void__ in
-        let __promise = bridge.create_std__shared_ptr_Promise_void__()
-        let __promiseHolder = bridge.wrap_std__shared_ptr_Promise_void__(__promise)
-        __result
-          .then({ __result in __promiseHolder.resolve() })
-          .catch({ __error in __promiseHolder.reject(__error.toCpp()) })
-        return __promise
-      }()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__resultCpp)
-    } catch (let __error) {
-      let __exceptionPtr = __error.toCpp()
-      return bridge.create_Result_std__shared_ptr_Promise_void___(__exceptionPtr)
     }
   }
   
@@ -759,22 +664,6 @@ open class HybridSoundSpec_cxx {
         let __wrappedFunction = bridge.wrap_Func_void_std__string_std__string_bool_double(callback)
         return { (__filename: String, __filePath: String, __isManual: Bool, __duration: Double) -> Void in
           __wrappedFunction.call(std.string(__filename), std.string(__filePath), __isManual, __duration)
-        }
-      }())
-      return bridge.create_Result_void_()
-    } catch (let __error) {
-      let __exceptionPtr = __error.toCpp()
-      return bridge.create_Result_void_(__exceptionPtr)
-    }
-  }
-  
-  @inline(__always)
-  public final func setManualSilenceCallback(callback: bridge.Func_void) -> bridge.Result_void_ {
-    do {
-      try self.__implementation.setManualSilenceCallback(callback: { () -> () -> Void in
-        let __wrappedFunction = bridge.wrap_Func_void(callback)
-        return { () -> Void in
-          __wrappedFunction.call()
         }
       }())
       return bridge.create_Result_void_()

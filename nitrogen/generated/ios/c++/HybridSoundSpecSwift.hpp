@@ -12,17 +12,14 @@
 // Forward declaration of `HybridSoundSpec_cxx` to properly resolve imports.
 namespace NitroSound { class HybridSoundSpec_cxx; }
 
-// Forward declaration of `RecordingMode` to properly resolve imports.
-namespace margelo::nitro::sound { enum class RecordingMode; }
 // Forward declaration of `PlayBackType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlayBackType; }
 // Forward declaration of `PlaybackEndType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlaybackEndType; }
 
 #include <NitroModules/Promise.hpp>
-#include "RecordingMode.hpp"
-#include <optional>
 #include <string>
+#include <optional>
 #include <unordered_map>
 #include "PlayBackType.hpp"
 #include <functional>
@@ -110,32 +107,16 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
-    inline std::shared_ptr<Promise<void>> setVADMode() override {
-      auto __result = _swiftPart.setVADMode();
+    inline std::shared_ptr<Promise<void>> startRecording(double maxDurationSeconds) override {
+      auto __result = _swiftPart.startRecording(std::forward<decltype(maxDurationSeconds)>(maxDurationSeconds));
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }
       auto __value = std::move(__result.value());
       return __value;
     }
-    inline std::shared_ptr<Promise<void>> setManualMode() override {
-      auto __result = _swiftPart.setManualMode();
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-      auto __value = std::move(__result.value());
-      return __value;
-    }
-    inline std::shared_ptr<Promise<void>> setIdleMode() override {
-      auto __result = _swiftPart.setIdleMode();
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-      auto __value = std::move(__result.value());
-      return __value;
-    }
-    inline std::shared_ptr<Promise<RecordingMode>> getCurrentMode() override {
-      auto __result = _swiftPart.getCurrentMode();
+    inline std::shared_ptr<Promise<void>> stopRecording() override {
+      auto __result = _swiftPart.stopRecording();
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }
@@ -144,30 +125,6 @@ namespace margelo::nitro::sound {
     }
     inline std::shared_ptr<Promise<bool>> isSegmentRecording() override {
       auto __result = _swiftPart.isSegmentRecording();
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-      auto __value = std::move(__result.value());
-      return __value;
-    }
-    inline std::shared_ptr<Promise<void>> startManualSegment(std::optional<double> silenceTimeoutSeconds) override {
-      auto __result = _swiftPart.startManualSegment(silenceTimeoutSeconds);
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-      auto __value = std::move(__result.value());
-      return __value;
-    }
-    inline std::shared_ptr<Promise<void>> stopManualSegment() override {
-      auto __result = _swiftPart.stopManualSegment();
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-      auto __value = std::move(__result.value());
-      return __value;
-    }
-    inline std::shared_ptr<Promise<void>> setVADThreshold(double threshold) override {
-      auto __result = _swiftPart.setVADThreshold(std::forward<decltype(threshold)>(threshold));
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }
@@ -334,12 +291,6 @@ namespace margelo::nitro::sound {
     }
     inline void setSegmentCallback(const std::function<void(const std::string& /* filename */, const std::string& /* filePath */, bool /* isManual */, double /* duration */)>& callback) override {
       auto __result = _swiftPart.setSegmentCallback(callback);
-      if (__result.hasError()) [[unlikely]] {
-        std::rethrow_exception(__result.error());
-      }
-    }
-    inline void setManualSilenceCallback(const std::function<void()>& callback) override {
-      auto __result = _swiftPart.setManualSilenceCallback(callback);
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }
