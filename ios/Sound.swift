@@ -33,13 +33,25 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
     private var activePlayer: ActivePlayer = .none
 
-    // Segment recording modes
-    private enum SegmentMode {
-        case idle       // No recording
-        case autoVAD    // Automatic threshold detection (sleep talking)
-        case manual     // Manual recording (alarm/day residue)
-    }
-    private var currentMode: SegmentMode = .idle
+    // =============================================================================
+    // DISABLED: VAD/Mode System (2025-02-02)
+    // Reason: Simplified to fixed-duration recording (90s max) for reliability.
+    // The mode system (idle/manual/vad) and silence detection added complexity
+    // that caused bugs. Keeping code for potential future use.
+    // =============================================================================
+
+    // Segment recording modes - DISABLED
+    // private enum SegmentMode {
+    //     case idle       // No recording
+    //     case autoVAD    // Automatic threshold detection (sleep talking)
+    //     case manual     // Manual recording (alarm/day residue)
+    // }
+    // private var currentMode: SegmentMode = .idle
+
+    // Fixed-duration recording state (replaces mode system)
+    private var fixedDurationTimer: DispatchSourceTimer?
+    private var recordingStartTime: Date?
+    private var maxRecordingDuration: Double = 90.0  // Default 90 seconds
 
     // Crossfade state management
     private var crossfadeTimer: Timer?
@@ -77,14 +89,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var audioAnalyzer: SNAudioStreamAnalyzer?
     private var soundClassifier: SNClassifySoundRequest?
     private var isSpeechActive: Bool = false
-    private var silenceFrameCount: Int = 0
+    // DISABLED: Silence detection state
+    // private var silenceFrameCount: Int = 0
     // private var audioLevelThreshold: Float = -25.0 // COMMENTED OUT - using VAD instead
     private var tapFrameCounter: Int = 0 // Debug counter
 
-    // VAD properties
-    private var vadManager: VadManager?
-    private var vadStreamState: VadStreamState?
-    private var vadThreshold: Float = 0.10  // 10% confidence - optimized for whisper detection (FluidAudio recommended 0.05-0.15)
+    // DISABLED: VAD properties
+    // private var vadManager: VadManager?
+    // private var vadStreamState: VadStreamState?
+    // private var vadThreshold: Float = 0.10  // 10% confidence - optimized for whisper detection (FluidAudio recommended 0.05-0.15)
 
     // Audio format conversion (48kHz → 16kHz for VAD)
     private var audioConverter: AVAudioConverter?
@@ -96,9 +109,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var currentTrackDuration: Double = 0.0
     private var nowPlayingArtwork: MPMediaItemArtwork?
 
-    // Manual mode silence detection (default 15 seconds at ~14 fps = 210 frames)
-    private var manualSilenceFrameCount: Int = 0
-    private var manualSilenceThreshold: Int = 210  // Configurable, defaults to ~15 seconds at observed 14 fps
+    // DISABLED: Manual mode silence detection (default 15 seconds at ~14 fps = 210 frames)
+    // private var manualSilenceFrameCount: Int = 0
+    // private var manualSilenceThreshold: Int = 210  // Configurable, defaults to ~15 seconds at observed 14 fps
 
     // MARK: - RT-Safe Audio Pipeline (Phase 1: Session Recording)
     // Tap does copy-only to SPSC buffer, worker does all processing
@@ -135,8 +148,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // Segment callback to notify JavaScript when a new file is written
     private var segmentCallback: ((String, String, Bool, Double) -> Void)?
 
-    // Manual silence timeout callback - notifies JS when 15s of silence detected in manual mode
-    private var manualSilenceCallback: (() -> Void)?
+    // DISABLED: Manual silence timeout callback - notifies JS when 15s of silence detected in manual mode
+    // private var manualSilenceCallback: (() -> Void)?
 
     // Lock screen track navigation callbacks
     private var nextTrackCallback: (() -> Void)?
@@ -556,7 +569,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let session = AVAudioSession.sharedInstance()
 
         // Recording state (note: no API to check if tap is installed - only buffer flow confirms it)
-        let mode = currentMode == .idle ? "idle" : (currentMode == .manual ? "manual" : "vad")
         let hasSegment = currentSegmentFile != nil
         let bufferCount = spscBuffer?.availableChunks ?? 0
 
@@ -572,7 +584,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let sampleRate = Int(session.sampleRate)
 
         bridgedLog("📊 STATE SNAPSHOT [\(context)]:")
-        bridgedLog("   🎙️ Recording: mode=\(mode), segment=\(hasSegment), buffer=\(bufferCount) chunks")
+        bridgedLog("   🎙️ Recording: segment=\(hasSegment), buffer=\(bufferCount) chunks")
         bridgedLog("   🔧 Engine: init=\(engineInit), running=\(engineRun)")
         bridgedLog("   🔊 Playback: loop=\(shouldLoopPlayback), ambient=\(isAmbientLoopPlaying)")
         bridgedLog("   📡 Session: \(category), \(sampleRate)Hz")
@@ -590,15 +602,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
 
-            // Stop recording session if active (manual mode)
+            // Stop recording session if active
             if self.isRecordingSession {
                 self.stopRecordingSession()
             }
 
-            // Stop VAD monitoring if active (autoVAD mode)
-            if self.currentMode == .autoVAD {
-                self.stopVADMonitoring()
-            }
+            // DISABLED: Stop VAD monitoring if active (autoVAD mode)
+            // if self.currentMode == .autoVAD {
+            //     self.stopVADMonitoring()
+            // }
 
             // Remove tap from unified engine's input node
             if let engine = self.audioEngine {
@@ -609,12 +621,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Clean up SPSC buffer
             self.spscBuffer = nil
 
-            // Clean up VAD resources
-            self.vadManager = nil
-            self.vadStreamState = nil
+            // DISABLED: Clean up VAD resources
+            // self.vadManager = nil
+            // self.vadStreamState = nil
 
-            // Reset mode to idle
-            self.currentMode = .idle
+            // DISABLED: Reset mode to idle
+            // self.currentMode = .idle
 
             // No callback to clear - using event emitting
 
@@ -648,15 +660,19 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             self.bridgedLog("🔚 endEngineSession() - full teardown")
 
-            // Step 1: Stop recording session if active (manual mode)
+            // Step 1: Stop recording session if active
             if self.isRecordingSession {
                 self.stopRecordingSession()
             }
 
-            // Step 1b: Stop VAD monitoring if active (autoVAD mode)
-            if self.currentMode == .autoVAD {
-                self.stopVADMonitoring()
-            }
+            // Step 1b: Stop fixed duration timer if active
+            self.fixedDurationTimer?.cancel()
+            self.fixedDurationTimer = nil
+
+            // DISABLED: Stop VAD monitoring if active (autoVAD mode)
+            // if self.currentMode == .autoVAD {
+            //     self.stopVADMonitoring()
+            // }
 
             // Step 2: Stop all playback
             self.currentPlayerNode?.stop()
@@ -698,8 +714,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.spscBuffer = nil
             self.processingTimer = nil
             self.processingQueue = nil
-            self.vadManager = nil
-            self.vadStreamState = nil
+            // DISABLED: VAD cleanup
+            // self.vadManager = nil
+            // self.vadStreamState = nil
 
             // Step 8: Reset playback state
             self.currentPlayerNode = nil
@@ -709,8 +726,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.shouldLoopPlayback = false
             self.currentPlaybackURI = nil
 
-            // Step 9: Reset mode
-            self.currentMode = .idle
+            // Step 9: Reset recording state
+            // DISABLED: self.currentMode = .idle
             self.isRecordingSession = false
 
             self.bridgedLog("✅ endEngineSession() completed")
@@ -720,9 +737,16 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return promise
     }
 
-    // MARK: - Mode Control Methods
+    // MARK: - Simple Recording API (Fixed Duration)
+    // New simplified recording: start with max duration, auto-stops when timer fires
 
-    public func setManualMode() throws -> Promise<Void> {
+    /**
+     * Start recording with a maximum duration. Recording will automatically stop
+     * when the duration is reached, or can be stopped early with stopRecording().
+     *
+     * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
+     */
+    public func startRecording(maxDurationSeconds: Double) throws -> Promise<Void> {
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -731,62 +755,21 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
 
-            // Stop any active recording session
-            if self.isRecordingSession {
-                self.stopRecordingSession()
-            }
-
-            // Stop VAD monitoring if active
-            if self.currentMode == .autoVAD {
-                self.stopVADMonitoring()
-            }
-
-            // Switch to manual mode (suppresses auto detection)
-            self.currentMode = .manual
-            self.currentSegmentIsManual = true
-            self.silenceFrameCount = 0
-            self.manualSilenceFrameCount = 0
-
-            self.bridgedLog("🎙️ Switched to manual mode")
-            promise.resolve(withResult: ())
-        }
-
-        return promise
-    }
-
-    public func startManualSegment(silenceTimeoutSeconds: Double?) throws -> Promise<Void> {
-        let promise = Promise<Void>()
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
-                return
-            }
-
-            // Verify we're in manual mode
-            guard self.currentMode == .manual else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Not in manual mode. Call setManualMode() first."))
-                return
-            }
-
-            // If already recording a session, stop it first
+            // If already recording, stop first
             if self.isRecordingSession {
                 self.bridgedLog("⚠️ Stopping existing recording session before starting new one")
                 self.stopRecordingSession()
             }
+
+            // Cancel any existing timer
+            self.fixedDurationTimer?.cancel()
+            self.fixedDurationTimer = nil
 
             // Verify target format is available
             guard self.targetFormat != nil else {
                 promise.reject(withError: RuntimeError.error(withMessage: "Target format not initialized"))
                 return
             }
-
-            // Configure silence timeout (default to 15 seconds if not provided)
-            let timeoutSeconds = silenceTimeoutSeconds ?? 15.0
-            self.manualSilenceThreshold = Int(timeoutSeconds * 14)  // ~14 fps from VAD analysis
-
-            // Reset silence counter
-            self.manualSilenceFrameCount = 0
 
             // Generate file URL for this segment
             guard let outputDir = self.outputDirectory else {
@@ -798,7 +781,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let filename = String(format: "speech_%lld_%03d.wav", self.sessionTimestamp, self.segmentCounter)
             let fileURL = outputDir.appendingPathComponent(filename)
 
-            // Mark as manual segment
+            // Store max duration for reference
+            self.maxRecordingDuration = maxDurationSeconds
+            self.recordingStartTime = Date()
+
+            // Mark as manual segment (all simple recordings are manual)
             self.currentSegmentIsManual = true
 
             // Start the RT-safe recording session (worker queue + SPSC buffer)
@@ -807,7 +794,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let now = Date()
             let formatter = DateFormatter()
             formatter.dateFormat = "HH:mm:ss.SSS"
-            self.bridgedLog("🎙️ Recording started at \(formatter.string(from: now)) (silence timeout: \(Int(timeoutSeconds))s)")
+            self.bridgedLog("🎙️ Recording started at \(formatter.string(from: now)) (max duration: \(Int(maxDurationSeconds))s)")
+
+            // Start fixed duration timer
+            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+            timer.schedule(deadline: .now() + maxDurationSeconds)
+            timer.setEventHandler { [weak self] in
+                guard let self = self else { return }
+                self.bridgedLog("🛑 Recording auto-stopped (duration: \(Int(maxDurationSeconds))s reached)")
+                self.stopRecordingInternal(wasManualStop: false)
+            }
+            timer.resume()
+            self.fixedDurationTimer = timer
 
             promise.resolve(withResult: ())
         }
@@ -815,7 +813,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return promise
     }
 
-    public func stopManualSegment() throws -> Promise<Void> {
+    /**
+     * Stop recording early (before max duration is reached).
+     * If no recording is active, this is a no-op.
+     */
+    public func stopRecording() throws -> Promise<Void> {
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -824,130 +826,69 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
 
-            // Stop the recording session if active
             if self.isRecordingSession {
-                self.stopRecordingSession()
+                self.bridgedLog("🛑 Recording stopped manually")
+                self.stopRecordingInternal(wasManualStop: true)
+            } else {
+                self.bridgedLog("⚠️ stopRecording called but no recording is active")
             }
 
-            // Stay in manual mode (as per user's answer)
             promise.resolve(withResult: ())
         }
 
         return promise
     }
 
-    public func setIdleMode() throws -> Promise<Void> {
-        let promise = Promise<Void>()
+    /**
+     * Internal method to stop recording and fire callback
+     */
+    private func stopRecordingInternal(wasManualStop: Bool) {
+        // Cancel the timer
+        self.fixedDurationTimer?.cancel()
+        self.fixedDurationTimer = nil
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
-                return
-            }
-
-            // Stop recording session if active (manual mode)
-            if self.isRecordingSession {
-                self.bridgedLog("⚠️ Stopping recording session before idle mode")
-                self.stopRecordingSession()
-            }
-
-            // Stop VAD monitoring if active (autoVAD mode)
-            if self.currentMode == .autoVAD {
-                self.stopVADMonitoring()
-            }
-
-            // Switch to idle mode (keeps tap active for quick resume)
-            self.currentMode = .idle
-
-            self.bridgedLog("🎙️ Switched to idle mode")
-            promise.resolve(withResult: ())
+        // Calculate actual duration
+        var duration: Double = 0
+        if let startTime = self.recordingStartTime {
+            duration = Date().timeIntervalSince(startTime)
         }
 
-        return promise
-    }
+        // Stop the recording session
+        guard self.isRecordingSession else { return }
+        self.isRecordingSession = false
 
-    public func setVADMode() throws -> Promise<Void> {
-        let promise = Promise<Void>()
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
-                return
-            }
-
-            // Stop any active recording session
-            if self.isRecordingSession {
-                self.bridgedLog("⚠️ Stopping recording session before VAD mode")
-                self.stopRecordingSession()
-            }
-
-            // Switch to autoVAD mode
-            self.currentMode = .autoVAD
-            self.silenceFrameCount = 0
-            self.currentSegmentIsManual = false
-
-            // Reset VAD state to fresh initial state (prevents false positives from stale data)
-            self.vadStreamState = VadStreamState.initial()
-
-            // Start VAD monitoring worker (continuously drains SPSC buffer and detects speech)
-            self.startVADMonitoring()
-
-            self.bridgedLog("🎙️ Switched to VAD mode - monitoring started")
-            promise.resolve(withResult: ())
+        // Drain remaining samples synchronously
+        processingQueue?.sync { [weak self] in
+            self?.drainAndProcess()
         }
 
-        return promise
-    }
+        // Stop worker
+        processingTimer?.cancel()
+        processingTimer = nil
 
-    public func getCurrentMode() throws -> Promise<RecordingMode> {
-        let promise = Promise<RecordingMode>()
-        
-        // Return current mode (synchronous - just reading property)
-        // Convert Swift SegmentMode enum to RecordingMode type
-        let recordingMode: RecordingMode
-        switch self.currentMode {
-        case .idle:
-            recordingMode = RecordingMode(fromString: "idle")!
-        case .manual:
-            recordingMode = RecordingMode(fromString: "manual")!
-        case .autoVAD:
-            recordingMode = RecordingMode(fromString: "vad")!  // TypeScript uses 'vad', Swift uses 'autoVAD'
+        // Close file and get metadata
+        guard let metadata = endCurrentSegmentWithoutCallback() else {
+            self.bridgedLog("⚠️ No segment to close in stopRecordingInternal")
+            return
         }
-        
-        promise.resolve(withResult: recordingMode)
-        return promise
+
+        // Process file and fire callback (no trimming for simple recording)
+        processAndFireSegmentCallback(metadata: metadata, trimSeconds: 0)
+
+        let endTime = Date()
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        self.bridgedLog("🛑 Recording ended at \(formatter.string(from: endTime)) (duration: \(String(format: "%.1f", duration))s, manual: \(wasManualStop))")
     }
 
+    /**
+     * Check if recording is currently active
+     */
     public func isSegmentRecording() throws -> Promise<Bool> {
         let promise = Promise<Bool>()
-
-        // Check if we're actively recording a segment
-        // Source of truth: isRecordingSession flag (worker is active and writing to file)
-        let isRecording = self.isRecordingSession && self.currentMode != .idle
-
-        promise.resolve(withResult: isRecording)
+        promise.resolve(withResult: self.isRecordingSession)
         return promise
     }
-
-    public func setVADThreshold(threshold: Double) throws -> Promise<Void> {
-        let promise = Promise<Void>()
-
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
-                return
-            }
-
-            // Validate threshold (0.0 to 1.0)
-            let clampedThreshold = max(0.0, min(1.0, threshold))
-            self.vadThreshold = Float(clampedThreshold)
-
-            promise.resolve(withResult: ())
-        }
-
-        return promise
-    }
-
 
     // MARK: - Audio Format Conversion
 
@@ -1057,8 +998,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         bridgedLog("🛑 Recording session stopped")
     }
 
-    /// Worker loop - drain SPSC ring buffer, resample, run VAD, write to file
+    /// Worker loop - drain SPSC ring buffer, resample, write to file
     /// Called every 10ms by the worker timer
+    /// SIMPLIFIED: No VAD or silence detection - just resample and write
     private func drainAndProcess() {
         guard isRecordingSession, let spsc = spscBuffer else { return }
 
@@ -1072,11 +1014,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 continue
             }
 
-            // 2. Run VAD for silence detection (manual mode auto-stop)
-            let audioIsLoud = runVADOnWorker(samples16k)
-            handleSilenceDetectionOnWorker(audioIsLoud: audioIsLoud)
+            // DISABLED: VAD/silence detection
+            // let audioIsLoud = runVADOnWorker(samples16k)
+            // handleSilenceDetectionOnWorker(audioIsLoud: audioIsLoud)
 
-            // 3. Write to file if still recording (silence detection may have stopped it)
+            // 2. Write to file
             if isRecordingSession, let segmentFile = currentSegmentFile {
                 do {
                     try segmentFile.write(from: samples16k)
@@ -1139,203 +1081,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
 
         return outputBuffer
-    }
-
-    /// Run VAD on 16kHz samples (worker queue)
-    /// Returns true if speech detected, false if silence
-    private func runVADOnWorker(_ buffer: AVAudioPCMBuffer) -> Bool {
-        guard let vadMgr = vadManager,
-              let vadState = vadStreamState,
-              let floatChannelData = buffer.floatChannelData,
-              floatChannelData[0] != nil else {
-            return false
-        }
-
-        let frameLength = Int(buffer.frameLength)
-        let samples = Array(UnsafeBufferPointer(start: floatChannelData[0], count: frameLength))
-
-        // Process VAD synchronously on worker (not async like tap callback)
-        // Use a semaphore to block until async VAD completes
-        var audioIsLoud = vadState.triggered
-
-        let semaphore = DispatchSemaphore(value: 0)
-        Task {
-            do {
-                let customConfig = VadSegmentationConfig(
-                    minSpeechDuration: 0.05,
-                    minSilenceDuration: 0.3,
-                    maxSpeechDuration: 14.0,
-                    speechPadding: 0.05,
-                    silenceThresholdForSplit: 0.3,
-                    negativeThreshold: 0.05,
-                    negativeThresholdOffset: 0.10,
-                    minSilenceAtMaxSpeech: 0.098,
-                    useMaxPossibleSilenceAtMaxSpeech: true
-                )
-
-                let streamResult = try await vadMgr.processStreamingChunk(
-                    samples,
-                    state: vadState,
-                    config: customConfig
-                )
-
-                self.vadStreamState = streamResult.state
-                audioIsLoud = streamResult.state.triggered
-            } catch {
-                // VAD processing error - keep previous state
-            }
-            semaphore.signal()
-        }
-
-        // Wait for VAD with timeout (avoid deadlock)
-        _ = semaphore.wait(timeout: .now() + .milliseconds(50))
-
-        return audioIsLoud
-    }
-
-    /// Handle silence detection for manual mode auto-stop (worker queue)
-    private func handleSilenceDetectionOnWorker(audioIsLoud: Bool) {
-        // Handle manual mode silence timeout
-        if currentMode == .manual && currentSegmentFile != nil {
-            if audioIsLoud {
-                manualSilenceFrameCount = 0
-            } else {
-                manualSilenceFrameCount += 1
-
-                // Log progress every ~1 second
-                let workerChunksPerSecond = 14
-                if manualSilenceFrameCount % workerChunksPerSecond == 0 {
-                    let elapsed = manualSilenceFrameCount / workerChunksPerSecond
-                    let total = manualSilenceThreshold / workerChunksPerSecond
-                    bridgedLog("🔇 Listening... \(elapsed)/\(total)s silence")
-                }
-
-                if manualSilenceFrameCount >= manualSilenceThreshold {
-                    let endTime = Date()
-                    let formatter = DateFormatter()
-                    formatter.dateFormat = "HH:mm:ss.SSS"
-                    bridgedLog("🛑 Recording ended at \(formatter.string(from: endTime)) (silence timeout reached)")
-
-                    manualSilenceFrameCount = 0
-                    isRecordingSession = false
-
-                    guard let metadata = endCurrentSegmentWithoutCallback() else { return }
-
-                    let silenceDurationSeconds = Double(manualSilenceThreshold) / 14.0
-                    let shouldTrim = silenceDurationSeconds > 2.0
-                    let trimAmount = shouldTrim ? silenceDurationSeconds : 0.0
-
-                    processAndFireSegmentCallback(metadata: metadata, trimSeconds: trimAmount)
-
-                    if let callback = manualSilenceCallback {
-                        DispatchQueue.main.async {
-                            callback()
-                        }
-                    }
-                }
-            }
-        }
-
-        // Handle autoVAD mode speech detection
-        if currentMode == .autoVAD {
-            let isCurrentlyRecording = currentSegmentFile != nil
-
-            if audioIsLoud {
-                if !isCurrentlyRecording {
-                    // Speech detected - start new VAD segment
-                    guard let outputDir = outputDirectory, let targetFormat = targetFormat else { return }
-
-                    segmentCounter += 1
-                    let filename = String(format: "speech_%lld_%03d.wav", sessionTimestamp, segmentCounter)
-                    let fileURL = outputDir.appendingPathComponent(filename)
-
-                    currentSegmentIsManual = false
-                    do {
-                        currentSegmentFile = try AVAudioFile(forWriting: fileURL, settings: targetFormat.settings)
-                        segmentStartTime = Date()
-                        bridgedLog("🎤 VAD: Speech detected, started segment \(filename)")
-                    } catch {
-                        bridgedLog("❌ Failed to create VAD segment: \(error.localizedDescription)")
-                    }
-                }
-                silenceFrameCount = 0
-            } else if isCurrentlyRecording {
-                // Silence during VAD recording
-                silenceFrameCount += 1
-
-                // ~0.5 second of silence ends VAD segment (50 frames at ~100fps)
-                let vadSilenceThreshold = 50
-                if silenceFrameCount >= vadSilenceThreshold {
-                    if let metadata = endCurrentSegmentWithoutCallback() {
-                        processAndFireSegmentCallback(metadata: metadata, trimSeconds: 0)
-                        bridgedLog("🔇 VAD: Silence detected, ended segment")
-                    }
-                    silenceFrameCount = 0
-                }
-            }
-        }
-    }
-
-    /// Start VAD monitoring worker (continuous drain + VAD detection)
-    /// Called when entering autoVAD mode
-    private func startVADMonitoring() {
-        // Create SPSC buffer if not exists
-        if spscBuffer == nil {
-            spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 1024)
-        }
-        spscBuffer?.reset()
-
-        // Start worker queue for continuous VAD monitoring
-        processingQueue = DispatchQueue(label: "com.hypnos.vadMonitoring", qos: .userInitiated)
-        processingTimer = DispatchSource.makeTimerSource(queue: processingQueue)
-        processingTimer?.schedule(deadline: .now(), repeating: .milliseconds(10))
-        processingTimer?.setEventHandler { [weak self] in
-            self?.drainAndProcessVAD()
-        }
-        processingTimer?.resume()
-    }
-
-    /// Stop VAD monitoring worker
-    private func stopVADMonitoring() {
-        processingTimer?.cancel()
-        processingTimer = nil
-
-        // Close any active VAD segment
-        if currentMode == .autoVAD && currentSegmentFile != nil {
-            if let metadata = endCurrentSegmentWithoutCallback() {
-                processAndFireSegmentCallback(metadata: metadata, trimSeconds: 0)
-            }
-        }
-    }
-
-    /// Worker loop for VAD monitoring mode
-    /// Continuously drains SPSC buffer, runs VAD, and auto-records when speech detected
-    private func drainAndProcessVAD() {
-        guard currentMode == .autoVAD, let spsc = spscBuffer else { return }
-
-        while let (samples48k, frameLength) = spsc.read() {
-            guard frameLength > 0 else { continue }
-
-            // Resample 48kHz → 16kHz
-            guard let samples16k = resampleOnWorker(samples48k, frameLength: frameLength) else {
-                continue
-            }
-
-            // Run VAD
-            let audioIsLoud = runVADOnWorker(samples16k)
-
-            // Handle speech detection (start/stop segments)
-            handleSilenceDetectionOnWorker(audioIsLoud: audioIsLoud)
-
-            // Write to file if recording
-            if let segmentFile = currentSegmentFile {
-                do {
-                    try segmentFile.write(from: samples16k)
-                } catch {
-                    // Silent fail
-                }
-            }
-        }
     }
 
     // MARK: - Player Node Helpers
@@ -2408,9 +2153,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         self.segmentCallback = callback
     }
 
-    public func setManualSilenceCallback(callback: @escaping () -> Void) throws {
-        self.manualSilenceCallback = callback
-    }
+    // DISABLED: Manual silence callback removed with simplified recording
+    // public func setManualSilenceCallback(callback: @escaping () -> Void) throws {
+    //     self.manualSilenceCallback = callback
+    // }
 
     public func setNextTrackCallback(callback: @escaping () -> Void) throws {
         self.nextTrackCallback = callback
