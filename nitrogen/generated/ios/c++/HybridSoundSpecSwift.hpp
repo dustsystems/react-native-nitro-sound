@@ -91,16 +91,16 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
-    inline std::shared_ptr<Promise<void>> startRecording(double maxDurationSeconds) override {
-      auto __result = _swiftPart.startRecording(std::forward<decltype(maxDurationSeconds)>(maxDurationSeconds));
+    inline std::shared_ptr<Promise<void>> beginRecording(double maxDurationSeconds) override {
+      auto __result = _swiftPart.beginRecording(std::forward<decltype(maxDurationSeconds)>(maxDurationSeconds));
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }
       auto __value = std::move(__result.value());
       return __value;
     }
-    inline std::shared_ptr<Promise<void>> stopRecording() override {
-      auto __result = _swiftPart.stopRecording();
+    inline std::shared_ptr<Promise<void>> endRecording() override {
+      auto __result = _swiftPart.endRecording();
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }

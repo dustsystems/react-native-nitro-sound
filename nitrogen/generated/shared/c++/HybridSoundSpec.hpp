@@ -61,8 +61,8 @@ namespace margelo::nitro::sound {
       virtual std::shared_ptr<Promise<void>> startRecorder() = 0;
       virtual std::shared_ptr<Promise<void>> stopRecorder() = 0;
       virtual std::shared_ptr<Promise<void>> endEngineSession() = 0;
-      virtual std::shared_ptr<Promise<void>> startRecording(double maxDurationSeconds) = 0;
-      virtual std::shared_ptr<Promise<void>> stopRecording() = 0;
+      virtual std::shared_ptr<Promise<void>> beginRecording(double maxDurationSeconds) = 0;
+      virtual std::shared_ptr<Promise<void>> endRecording() = 0;
       virtual std::shared_ptr<Promise<bool>> isSegmentRecording() = 0;
       virtual std::shared_ptr<Promise<std::string>> startPlayer(const std::optional<std::string>& uri, const std::optional<std::unordered_map<std::string, std::string>>& httpHeaders) = 0;
       virtual std::shared_ptr<Promise<std::string>> stopPlayer() = 0;

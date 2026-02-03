@@ -76,19 +76,19 @@ export interface Sound
   // Simple fixed-duration recording API
 
   /**
-   * Start recording with a maximum duration.
+   * Begin recording with a maximum duration.
    * Recording automatically stops when the duration is reached.
-   * Can be stopped early with stopRecording().
+   * Can be stopped early with endRecording().
    *
    * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
    */
-  startRecording(maxDurationSeconds: number): Promise<void>;
+  beginRecording(maxDurationSeconds: number): Promise<void>;
 
   /**
-   * Stop recording early (before max duration is reached).
+   * End recording early (before max duration is reached).
    * If no recording is active, this is a no-op.
    */
-  stopRecording(): Promise<void>;
+  endRecording(): Promise<void>;
 
   /**
    * Check if recording is currently active.

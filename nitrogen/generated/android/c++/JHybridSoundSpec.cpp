@@ -100,8 +100,8 @@ namespace margelo::nitro::sound {
       return __promise;
     }();
   }
-  std::shared_ptr<Promise<void>> JHybridSoundSpec::startRecording(double maxDurationSeconds) {
-    static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(double /* maxDurationSeconds */)>("startRecording");
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::beginRecording(double maxDurationSeconds) {
+    static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(double /* maxDurationSeconds */)>("beginRecording");
     auto __result = method(_javaPart, maxDurationSeconds);
     return [&]() {
       auto __promise = Promise<void>::create();
@@ -115,8 +115,8 @@ namespace margelo::nitro::sound {
       return __promise;
     }();
   }
-  std::shared_ptr<Promise<void>> JHybridSoundSpec::stopRecording() {
-    static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("stopRecording");
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::endRecording() {
+    static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("endRecording");
     auto __result = method(_javaPart);
     return [&]() {
       auto __promise = Promise<void>::create();

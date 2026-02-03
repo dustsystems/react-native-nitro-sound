@@ -54,11 +54,11 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
-  abstract fun startRecording(maxDurationSeconds: Double): Promise<Unit>
+  abstract fun beginRecording(maxDurationSeconds: Double): Promise<Unit>
   
   @DoNotStrip
   @Keep
-  abstract fun stopRecording(): Promise<Unit>
+  abstract fun endRecording(): Promise<Unit>
   
   @DoNotStrip
   @Keep

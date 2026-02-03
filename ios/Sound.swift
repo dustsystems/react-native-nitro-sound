@@ -40,14 +40,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // that caused bugs. Keeping code for potential future use.
     // =============================================================================
 
-    // Segment recording modes - DISABLED
-    // private enum SegmentMode {
-    //     case idle       // No recording
-    //     case autoVAD    // Automatic threshold detection (sleep talking)
-    //     case manual     // Manual recording (alarm/day residue)
-    // }
-    // private var currentMode: SegmentMode = .idle
-
     // Fixed-duration recording state (replaces mode system)
     private var fixedDurationTimer: DispatchSourceTimer?
     private var recordingStartTime: Date?
@@ -702,12 +694,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // New simplified recording: start with max duration, auto-stops when timer fires
 
     /**
-     * Start recording with a maximum duration. Recording will automatically stop
-     * when the duration is reached, or can be stopped early with stopRecording().
+     * Begin recording with a maximum duration. Recording will automatically stop
+     * when the duration is reached, or can be stopped early with endRecording().
      *
      * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
      */
-    public func startRecording(maxDurationSeconds: Double) throws -> Promise<Void> {
+    public func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void> {
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -775,10 +767,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
 
     /**
-     * Stop recording early (before max duration is reached).
+     * End recording early (before max duration is reached).
      * If no recording is active, this is a no-op.
      */
-    public func stopRecording() throws -> Promise<Void> {
+    public func endRecording() throws -> Promise<Void> {
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -788,10 +780,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
 
             if self.isRecordingSession {
-                self.bridgedLog("🛑 Recording stopped manually")
+                self.bridgedLog("🛑 Recording ended manually")
                 self.stopRecordingInternal(wasManualStop: true)
             } else {
-                self.bridgedLog("⚠️ stopRecording called but no recording is active")
+                self.bridgedLog("⚠️ endRecording called but no recording is active")
             }
 
             promise.resolve(withResult: ())
@@ -849,43 +841,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let promise = Promise<Bool>()
         promise.resolve(withResult: self.isRecordingSession)
         return promise
-    }
-
-    // MARK: - Audio Format Conversion
-
-    /// Converts a buffer from hardware sample rate (e.g., 48kHz) to 16kHz for VAD processing
-    private func convertTo16kHz(_ buffer: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
-        guard let converter = self.audioConverter,
-              let targetFormat = self.targetFormat else {
-            return nil
-        }
-
-        // Calculate output frame capacity based on sample rate ratio
-        let sampleRateRatio = targetFormat.sampleRate / buffer.format.sampleRate
-        let outputFrameCapacity = AVAudioFrameCount(Double(buffer.frameLength) * sampleRateRatio)
-
-        // Create output buffer at target format (16kHz)
-        guard let outputBuffer = AVAudioPCMBuffer(
-            pcmFormat: targetFormat,
-            frameCapacity: outputFrameCapacity
-        ) else {
-            return nil
-        }
-
-        var error: NSError?
-        let inputBlock: AVAudioConverterInputBlock = { inNumPackets, outStatus in
-            outStatus.pointee = .haveData
-            return buffer
-        }
-
-        converter.convert(to: outputBuffer, error: &error, withInputFrom: inputBlock)
-
-        if let error = error {
-            self.bridgedLog("⚠️ Conversion error: \(error.localizedDescription)")
-            return nil
-        }
-
-        return outputBuffer
     }
 
     // MARK: - Worker Queue (RT-Safe Audio Processing)
