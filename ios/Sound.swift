@@ -128,6 +128,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // Log callback to bridge Swift logs to JavaScript
     private var logCallback: ((String) -> Void)?
 
+    // Interruption tracking
+    private var currentInterruptionId: String?
+    private var interruptionStartTime: Date?
+
     // Segment callback to notify JavaScript when a new file is written
     private var segmentCallback: ((String, String, Bool, Double) -> Void)?
 
@@ -313,6 +317,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // MARK: - Audio Interruption Handling
 
+    private func formattedTimestamp() -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter.string(from: Date())
+    }
+
     private func setupAudioInterruptionHandling() {
         // Handle audio interruptions (phone calls, other apps, etc.)
         NotificationCenter.default.addObserver(
@@ -327,7 +337,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         guard let userInfo = notification.userInfo,
               let typeValue = userInfo[AVAudioSessionInterruptionTypeKey] as? UInt,
               let type = AVAudioSession.InterruptionType(rawValue: typeValue) else {
-            bridgedLog("⚠️ Audio interruption notification missing required keys")
+            bridgedLog("⚠️ [\(formattedTimestamp())] Audio interruption notification missing required keys")
             return
         }
 
@@ -349,17 +359,46 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
         }
 
-        if type == .ended {
+        let timestamp = formattedTimestamp()
+
+        if type == .began {
+            // Generate new interruption ID and record start time
+            currentInterruptionId = String(UUID().uuidString.prefix(8)).lowercased()
+            interruptionStartTime = Date()
+
+            bridgedLog("╔════════════════════════════════════════════════════════════════╗")
+            bridgedLog("║  🔇 AUDIO INTERRUPTION BEGAN                                   ║")
+            bridgedLog("╠════════════════════════════════════════════════════════════════╣")
+            bridgedLog("║  ID:        \(currentInterruptionId ?? "n/a")")
+            bridgedLog("║  Time:      \(timestamp)")
+            bridgedLog("║  Reason:    \(reasonString)")
+            bridgedLog("╚════════════════════════════════════════════════════════════════╝")
+            logStateSnapshot(context: "interruption-began")
+
+        } else if type == .ended {
             let shouldResume = (userInfo[AVAudioSessionInterruptionOptionKey] as? UInt) == AVAudioSession.InterruptionOptions.shouldResume.rawValue
 
-            bridgedLog("🔊 AUDIO INTERRUPTION ENDED")
-            bridgedLog("   Reason: \(reasonString)")
-            bridgedLog("   Should resume: \(shouldResume)")
+            // Calculate duration
+            var durationString = "unknown"
+            if let startTime = interruptionStartTime {
+                let duration = Date().timeIntervalSince(startTime)
+                durationString = String(format: "%.2fs", duration)
+            }
+
+            bridgedLog("╔════════════════════════════════════════════════════════════════╗")
+            bridgedLog("║  🔊 AUDIO INTERRUPTION ENDED                                   ║")
+            bridgedLog("╠════════════════════════════════════════════════════════════════╣")
+            bridgedLog("║  ID:            \(currentInterruptionId ?? "n/a")")
+            bridgedLog("║  Time:          \(timestamp)")
+            bridgedLog("║  Duration:      \(durationString)")
+            bridgedLog("║  Reason:        \(reasonString)")
+            bridgedLog("║  Should Resume: \(shouldResume)")
+            bridgedLog("╚════════════════════════════════════════════════════════════════╝")
             logStateSnapshot(context: "interruption-ended")
-        } else if type == .began {
-            bridgedLog("🔇 AUDIO INTERRUPTION BEGAN")
-            bridgedLog("   Reason: \(reasonString)")
-            logStateSnapshot(context: "interruption-began")
+
+            // Clear tracking state
+            currentInterruptionId = nil
+            interruptionStartTime = nil
         }
     }
 
