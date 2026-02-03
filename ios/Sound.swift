@@ -84,6 +84,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // DISABLED: Silence detection state
     // private var silenceFrameCount: Int = 0
     // private var audioLevelThreshold: Float = -25.0 // COMMENTED OUT - using VAD instead
+    private var workerChunkCounter: Int = 0  // Debug counter for worker thread logging
+    private var tapCallbackCounter: Int = 0  // Tap callback counter (incremented RT-safely, logged from worker)
+    private var lastLoggedTapCount: Int = 0  // Track what we last logged to detect tap activity
+    private var tapMonitorTimer: DispatchSourceTimer?  // Logs tap activity periodically (runs on main queue, not RT)
 
     // DISABLED: VAD properties
     // private var vadManager: VadManager?
@@ -254,65 +258,16 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             throw RuntimeError.error(withMessage: "No engine to restart")
         }
 
-        bridgedLog("🔧 Restarting audio engine...")
+        bridgedLog("🔧 Restarting audio engine (no reassertions)...")
 
-        // IMPORTANT: AVAudioSession and AVAudioEngine are separate systems:
-        // - AVAudioSession: iOS system-level singleton that controls audio permissions/routing
-        // - AVAudioEngine: Your app's audio processing engine instance
-        //
-        // After an interruption, iOS may deactivate the session (setActive(false))
-        // but the engine instance still exists. We must reactivate the SESSION first,
-        // then restart the ENGINE. Trying to start the engine without an active session
-        // can cause format errors (2003329396) because hardware isn't accessible.
-        let audioSession = AVAudioSession.sharedInstance()
-
-        // Step 1: Re-apply mixable .playAndRecord category (iOS may clear options after interruption).
-        // Background reactivation fails with 560557684 (CannotInterruptOthers) if category is not mixable.
-        do {
-            try audioSession.setCategory(.playAndRecord,
-                                        mode: .default,
-                                        options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
-        } catch {
-            let nsError = error as NSError
-            bridgedLog("⚠️ Re-apply setCategory failed: \(error.localizedDescription) (code: \(nsError.code)) - continuing anyway")
-        }
-
-        // Step 2: Reactivate the audio session (tell iOS we want audio access again)
-        // NOTE: In background with locked device, this might fail if iOS has suspended the app.
-        // That's OK - the next audio operation (alarm, silent loop) will fully reinitialize.
-        do {
-            try audioSession.setActive(true, options: [])
-        } catch {
-            let nsError = error as NSError
-            bridgedLog("⚠️ Failed to reactivate audio session: \(error.localizedDescription) (code: \(nsError.code)) - continuing anyway")
-        }
-
-        // Step 3: Restart the audio engine (start audio processing)
         if !engine.isRunning {
             do {
                 try engine.start()
                 bridgedLog("✅ Audio engine restarted")
             } catch {
-                // If restart fails with format error (2003329396 = kAudioFormatUnsupportedDataFormatError),
-                // the engine's format configuration is likely stale/invalid after interruption
                 let nsError = error as NSError
-                let errorCode = nsError.code
-
-                if errorCode == 2003329396 { // kAudioFormatUnsupportedDataFormatError
-                    bridgedLog("⚠️ Format error (2003329396) - destroying engine for reinit")
-                    // Destroy the engine instance so initializeAudioEngine() creates a fresh one
-                    // This ensures we get a clean format configuration on next operation
-                    audioEngine = nil
-                    audioPlayerNodeA = nil
-                    audioPlayerNodeB = nil
-                    audioPlayerNodeC = nil
-                    audioPlayerNodeD = nil
-                    audioEngineInitialized = false
-                    // Don't throw - allow graceful degradation, next operation will fully reinitialize
-                } else {
-                    bridgedLog("❌ Engine restart failed: \(error.localizedDescription) (code: \(errorCode))")
-                    throw error
-                }
+                bridgedLog("❌ Engine restart failed: \(error.localizedDescription) (code: \(nsError.code))")
+                throw error
             }
         } else {
             bridgedLog("✅ Audio engine already running")
@@ -335,6 +290,33 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             name: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance()
         )
+
+        // Handle audio engine configuration changes (route changes, hardware changes, etc.)
+        // This notification fires AFTER interruptionNotification when hardware config changes
+        // Note: Using nil for object since audioEngine may not exist yet at init() time
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleEngineConfigurationChange),
+            name: .AVAudioEngineConfigurationChange,
+            object: nil
+        )
+    }
+
+    @objc private func handleEngineConfigurationChange(notification: Notification) {
+        let timestamp = formattedTimestamp()
+
+        // Get engine state
+        let engineRunning = audioEngine?.isRunning ?? false
+        let engineInitialized = audioEngineInitialized
+
+        bridgedLog("╔════════════════════════════════════════════════════════════════╗")
+        bridgedLog("║  ⚙️ AUDIO ENGINE CONFIGURATION CHANGE                          ║")
+        bridgedLog("╠════════════════════════════════════════════════════════════════╣")
+        bridgedLog("║  Time:              \(timestamp)")
+        bridgedLog("║  Engine Running:    \(engineRunning)")
+        bridgedLog("║  Engine Initialized: \(engineInitialized)")
+        bridgedLog("╚════════════════════════════════════════════════════════════════╝")
+        logStateSnapshot(context: "engine-config-change")
     }
 
     @objc private func handleAudioInterruption(notification: Notification) {
@@ -399,6 +381,22 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("║  Should Resume: \(shouldResume)")
             bridgedLog("╚════════════════════════════════════════════════════════════════╝")
             logStateSnapshot(context: "interruption-ended")
+
+            // Attempt engine restart if shouldResume is true
+            if let engine = audioEngine, audioEngineInitialized && !engine.isRunning {
+                if shouldResume {
+                    bridgedLog("🔄 shouldResume=true, attempting engine.start()...")
+                    do {
+                        try engine.start()
+                        bridgedLog("✅ Engine restarted after interruption")
+                    } catch {
+                        let nsError = error as NSError
+                        bridgedLog("❌ Engine restart after interruption failed: \(error.localizedDescription) (code: \(nsError.code))")
+                    }
+                } else {
+                    bridgedLog("⏸️ shouldResume=false, not auto-restarting engine")
+                }
+            }
 
             // Clear tracking state
             currentInterruptionId = nil
@@ -509,10 +507,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // Install tap - RT-SAFE: copy-only, no processing, NO LOGGING
             // (Logging from RT audio thread can cause glitches via memory allocation & GCD locks)
+            // Only RT-safe operations: increment counter + buffer write
             inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buffer, time in
                 guard let self = self, let spsc = self.spscBuffer else { return }
+                self.tapCallbackCounter += 1  // RT-safe: simple int increment
                 _ = spsc.write(buffer)
             }
+
+            // Start tap monitor timer - logs every 2 seconds to confirm tap is receiving data
+            self.tapCallbackCounter = 0
+            self.lastLoggedTapCount = 0
+            self.startTapMonitor()
 
             self.bridgedLog("🎙️🟠 TAP INSTALLED")
             promise.resolve(withResult: ())
@@ -522,6 +527,34 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             promise.reject(withError: RuntimeError.error(withMessage: "Tap installation failed: \(error.localizedDescription)"))
         }
     }
+
+    // MARK: - Tap Monitor (logs tap activity from non-RT thread)
+
+    private func startTapMonitor() {
+        stopTapMonitor()  // Cancel any existing timer
+
+        tapMonitorTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
+        tapMonitorTimer?.schedule(deadline: .now() + 5.0, repeating: 5.0)  // Log every 5 seconds
+        tapMonitorTimer?.setEventHandler { [weak self] in
+            guard let self = self else { return }
+            let currentCount = self.tapCallbackCounter
+            let delta = currentCount - self.lastLoggedTapCount
+            self.lastLoggedTapCount = currentCount
+
+            if delta > 0 {
+                self.bridgedLog("🎤 TAP ACTIVE | callbacks: \(currentCount) (+\(delta) in 5s) | recording: \(self.isRecordingSession)")
+            } else {
+                self.bridgedLog("⚠️ TAP STALLED | callbacks: \(currentCount) (no new data in 5s) | recording: \(self.isRecordingSession)")
+            }
+        }
+        tapMonitorTimer?.resume()
+    }
+
+    private func stopTapMonitor() {
+        tapMonitorTimer?.cancel()
+        tapMonitorTimer = nil
+    }
+
     // MARK: - Debug Helpers
 
     private func logStateSnapshot(context: String) {
@@ -574,6 +607,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Remove tap from unified engine's input node
             if let engine = self.audioEngine {
                 engine.inputNode.removeTap(onBus: 0)
+                self.stopTapMonitor()
                 self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED - mic indicator should disappear if tap was the cause")
             }
 
@@ -643,6 +677,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Step 3: Remove microphone tap
             if let engine = self.audioEngine {
                 engine.inputNode.removeTap(onBus: 0)
+                self.stopTapMonitor()
                 self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED (endEngineSession)")
             }
 
@@ -860,6 +895,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
         }
         spscBuffer?.reset()
+        workerChunkCounter = 0  // Reset debug counters for new session
+        tapCallbackCounter = 0
 
         // Open file for writing at 16kHz format
         guard let targetFormat = self.targetFormat else {
@@ -931,6 +968,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         while let (samples48k, frameLength) = spsc.read() {
             // Skip empty chunks
             guard frameLength > 0 else { continue }
+
+            // Log every ~1 second (10 chunks at ~100ms each)
+            // Safe here: worker thread is NOT RT-constrained
+            workerChunkCounter += 1
+            if workerChunkCounter % 10 == 1 {
+                bridgedLog("🎤 Tap→Worker | tap callbacks: \(tapCallbackCounter) | worker chunks: \(workerChunkCounter) | frames: \(frameLength) | queued: \(spsc.availableChunks)")
+            }
 
             // 1. Resample 48kHz → 16kHz
             guard let samples16k = resampleOnWorker(samples48k, frameLength: frameLength) else {
@@ -1412,7 +1456,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             do {
                 try self.setupAudioEngine()
-                try self.ensureEngineRunning()
+
+                // Log if engine is not running (diagnostic - no auto-restart)
+                if let engine = self.audioEngine, !engine.isRunning {
+                    self.bridgedLog("⚠️ ENGINE NOT RUNNING at startPlayer entry")
+                }
 
                 // Note: Remote commands are NOT set up here - they're only set up
                 // when updateNowPlaying() is explicitly called (evening phases only)
@@ -2278,6 +2326,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 // Ensure audio engine is initialized for crossfading
                 try self.setupAudioEngine()
 
+                // Log if engine is not running (diagnostic - no auto-restart)
+                if let engine = self.audioEngine, !engine.isRunning {
+                    self.bridgedLog("⚠️ ENGINE NOT RUNNING at crossfadeTo entry")
+                }
+
                 // Cancel seamless loop timer from previous track
                 self.loopCrossfadeTimer?.cancel()
                 self.loopCrossfadeTimer = nil
@@ -2444,7 +2497,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             do {
                 // Initialize audio engine if needed
                 try self.setupAudioEngine()
-                try self.ensureEngineRunning()
+
+                // Log if engine is not running (diagnostic - no auto-restart)
+                if let engine = self.audioEngine, !engine.isRunning {
+                    self.bridgedLog("⚠️ ENGINE NOT RUNNING at startAmbientLoop entry")
+                }
 
                 guard let playerD = self.audioPlayerNodeD else {
                     promise.reject(withError: RuntimeError.error(withMessage: "Ambient player not initialized"))
@@ -2779,6 +2836,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Cleanup unified audio engine if needed
         if let engine = audioEngine {
             engine.inputNode.removeTap(onBus: 0)
+            stopTapMonitor()
             // Don't stop the engine here as it might be used by other instances
         }
         // No callback to clear - using event emitting
