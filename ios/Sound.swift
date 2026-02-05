@@ -88,6 +88,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var tapCallbackCounter: Int = 0  // Tap callback counter (incremented RT-safely, logged from worker)
     private var lastLoggedTapCount: Int = 0  // Track what we last logged to detect tap activity
     private var tapMonitorTimer: DispatchSourceTimer?  // Logs tap activity periodically (runs on main queue, not RT)
+    private var tapInstallTime: Date?  // When tap was installed (for throttling after 30 minutes)
+    private var isTapLoggingThrottled: Bool = false  // Whether we've switched to 15-minute logging intervals
 
     // DISABLED: VAD properties
     // private var vadManager: VadManager?
@@ -514,9 +516,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 _ = spsc.write(buffer)
             }
 
-            // Start tap monitor timer - logs every 2 seconds to confirm tap is receiving data
+            // Start tap monitor timer - logs every 5 seconds to confirm tap is receiving data
+            // (switches to 15-minute intervals after 30 minutes to reduce log noise during overnight sessions)
             self.tapCallbackCounter = 0
             self.lastLoggedTapCount = 0
+            self.tapInstallTime = Date()
+            self.isTapLoggingThrottled = false
             self.startTapMonitor()
 
             self.bridgedLog("🎙️🟠 TAP INSTALLED")
@@ -534,17 +539,33 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         stopTapMonitor()  // Cancel any existing timer
 
         tapMonitorTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        tapMonitorTimer?.schedule(deadline: .now() + 5.0, repeating: 5.0)  // Log every 5 seconds
+        tapMonitorTimer?.schedule(deadline: .now() + 5.0, repeating: 5.0)  // Log every 5 seconds initially
         tapMonitorTimer?.setEventHandler { [weak self] in
             guard let self = self else { return }
             let currentCount = self.tapCallbackCounter
             let delta = currentCount - self.lastLoggedTapCount
             self.lastLoggedTapCount = currentCount
 
+            // Calculate elapsed time since tap was installed
+            let elapsedMinutes = self.tapInstallTime.map {
+                Date().timeIntervalSince($0) / 60.0
+            } ?? 0
+
             if delta > 0 {
-                self.bridgedLog("🎤 TAP ACTIVE | callbacks: \(currentCount) (+\(delta) in 5s) | recording: \(self.isRecordingSession)")
+                self.bridgedLog("🎤 TAP ACTIVE | callbacks: \(currentCount) (+\(delta)) | elapsed: \(Int(elapsedMinutes))min | recording: \(self.isRecordingSession)")
             } else {
-                self.bridgedLog("⚠️ TAP STALLED | callbacks: \(currentCount) (no new data in 5s) | recording: \(self.isRecordingSession)")
+                self.bridgedLog("⚠️ TAP STALLED | callbacks: \(currentCount) (no new data) | elapsed: \(Int(elapsedMinutes))min | recording: \(self.isRecordingSession)")
+            }
+
+            // After 30 minutes, switch to 15-minute logging intervals to reduce log noise during overnight sessions
+            let thirtyMinutes: TimeInterval = 30 * 60
+            let fifteenMinutes: TimeInterval = 15 * 60
+            if !self.isTapLoggingThrottled,
+               let startTime = self.tapInstallTime,
+               Date().timeIntervalSince(startTime) >= thirtyMinutes {
+                self.isTapLoggingThrottled = true
+                self.tapMonitorTimer?.schedule(deadline: .now() + fifteenMinutes, repeating: fifteenMinutes)
+                self.bridgedLog("🎤 Switching to 15-minute logging intervals")
             }
         }
         tapMonitorTimer?.resume()
@@ -553,6 +574,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private func stopTapMonitor() {
         tapMonitorTimer?.cancel()
         tapMonitorTimer = nil
+        tapInstallTime = nil
+        isTapLoggingThrottled = false
     }
 
     // MARK: - Debug Helpers
