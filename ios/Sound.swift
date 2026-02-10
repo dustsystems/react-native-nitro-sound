@@ -574,7 +574,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private func stopTapMonitor() {
         tapMonitorTimer?.cancel()
         tapMonitorTimer = nil
-        tapInstallTime = nil
+        // DO NOT reset tapInstallTime here - it's set by installTap() and should persist
+        // until the next installTap() call to track elapsed time correctly
         isTapLoggingThrottled = false
     }
 
