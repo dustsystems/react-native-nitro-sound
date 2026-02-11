@@ -1647,19 +1647,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
 
     private func triggerSeamlessLoopCrossfade(audioFile: AVAudioFile, url: URL) {
-        bridgedLog("🔄 triggerSeamlessLoopCrossfade ENTER - url: \(url.lastPathComponent)")
-        bridgedLog("   shouldLoopPlayback: \(self.shouldLoopPlayback), isLoopCrossfadeActive: \(self.isLoopCrossfadeActive)")
-        bridgedLog("   url match: \(url.absoluteString == self.currentLoopingFileURI) (current: \(self.currentLoopingFileURI?.components(separatedBy: "/").last ?? "nil"))")
-
         guard self.shouldLoopPlayback,
               !self.isLoopCrossfadeActive,
               url.absoluteString == self.currentLoopingFileURI else {
-            bridgedLog("🔄 triggerSeamlessLoopCrossfade SKIPPED - guard failed")
             return
         }
 
         self.isLoopCrossfadeActive = true
-        bridgedLog("🔄 triggerSeamlessLoopCrossfade PROCEEDING - crossfade active")
 
         // Get alternate player node
         let newNode: AVAudioPlayerNode
