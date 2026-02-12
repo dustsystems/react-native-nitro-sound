@@ -319,6 +319,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         bridgedLog("║  Engine Initialized: \(engineInitialized)")
         bridgedLog("╚════════════════════════════════════════════════════════════════╝")
         logStateSnapshot(context: "engine-config-change")
+
+        // Only recover if we're in an active session and the engine stopped
+        guard engineInitialized, let engine = audioEngine, !engine.isRunning else { return }
+
+        bridgedLog("⚠️ Config change: engine stopped during active session, restarting...")
+
+        do {
+            try engine.start()
+            bridgedLog("✅ Engine restarted after config change")
+        } catch {
+            bridgedLog("❌ Engine restart after config change failed: \(error.localizedDescription)")
+        }
     }
 
     @objc private func handleAudioInterruption(notification: Notification) {
@@ -2757,6 +2769,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 if !playerNode.isPlaying {
                     // GUARD: Prevent infinite logging if we've already handled playback end
                     guard !self.didEmitPlaybackEnd else {
+                        return
+                    }
+
+                    // GUARD: If the engine itself is stopped (e.g. config change killed it),
+                    // the player node stopping is a side effect, not a real track completion
+                    guard self.audioEngine?.isRunning == true else {
                         return
                     }
 
