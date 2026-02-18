@@ -569,12 +569,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 self.bridgedLog("⚠️ TAP STALLED | callbacks: \(currentCount) (no new data) | elapsed: \(Int(elapsedMinutes))min | recording: \(self.isRecordingSession)")
             }
 
-            // After 30 minutes, switch to 15-minute logging intervals to reduce log noise during overnight sessions
-            let thirtyMinutes: TimeInterval = 30 * 60
+            // After 15 minutes, switch to 15-minute logging intervals to reduce log noise during overnight sessions
             let fifteenMinutes: TimeInterval = 15 * 60
             if !self.isTapLoggingThrottled,
                let startTime = self.tapInstallTime,
-               Date().timeIntervalSince(startTime) >= thirtyMinutes {
+               Date().timeIntervalSince(startTime) >= fifteenMinutes {
                 self.isTapLoggingThrottled = true
                 self.tapMonitorTimer?.schedule(deadline: .now() + fifteenMinutes, repeating: fifteenMinutes)
                 self.bridgedLog("🎤 Switching to 15-minute logging intervals")
