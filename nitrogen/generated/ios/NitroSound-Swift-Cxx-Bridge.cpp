@@ -77,6 +77,14 @@ namespace margelo::nitro::sound::bridge::swift {
     };
   }
   
+  // pragma MARK: std::function<void(const std::string& /* text */, bool /* isFinal */)>
+  Func_void_std__string_bool create_Func_void_std__string_bool(void* _Nonnull swiftClosureWrapper) noexcept {
+    auto swiftClosure = NitroSound::Func_void_std__string_bool::fromUnsafe(swiftClosureWrapper);
+    return [swiftClosure = std::move(swiftClosure)](const std::string& text, bool isFinal) mutable -> void {
+      swiftClosure.call(text, isFinal);
+    };
+  }
+  
   // pragma MARK: std::shared_ptr<HybridSoundSpec>
   std::shared_ptr<HybridSoundSpec> create_std__shared_ptr_HybridSoundSpec_(void* _Nonnull swiftUnsafePointer) noexcept {
     NitroSound::HybridSoundSpec_cxx swiftPart = NitroSound::HybridSoundSpec_cxx::fromUnsafe(swiftUnsafePointer);

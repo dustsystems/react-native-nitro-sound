@@ -360,6 +360,28 @@ namespace margelo::nitro::sound::bridge::swift {
     return vector;
   }
   
+  // pragma MARK: std::function<void(const std::string& /* text */, bool /* isFinal */)>
+  /**
+   * Specialized version of `std::function<void(const std::string&, bool)>`.
+   */
+  using Func_void_std__string_bool = std::function<void(const std::string& /* text */, bool /* isFinal */)>;
+  /**
+   * Wrapper class for a `std::function<void(const std::string& / * text * /, bool / * isFinal * /)>`, this can be used from Swift.
+   */
+  class Func_void_std__string_bool_Wrapper final {
+  public:
+    explicit Func_void_std__string_bool_Wrapper(std::function<void(const std::string& /* text */, bool /* isFinal */)>&& func): _function(std::make_unique<std::function<void(const std::string& /* text */, bool /* isFinal */)>>(std::move(func))) {}
+    inline void call(std::string text, bool isFinal) const noexcept {
+      _function->operator()(text, isFinal);
+    }
+  private:
+    std::unique_ptr<std::function<void(const std::string& /* text */, bool /* isFinal */)>> _function;
+  } SWIFT_NONCOPYABLE;
+  Func_void_std__string_bool create_Func_void_std__string_bool(void* _Nonnull swiftClosureWrapper) noexcept;
+  inline Func_void_std__string_bool_Wrapper wrap_Func_void_std__string_bool(Func_void_std__string_bool value) noexcept {
+    return Func_void_std__string_bool_Wrapper(std::move(value));
+  }
+  
   // pragma MARK: std::shared_ptr<HybridSoundSpec>
   /**
    * Specialized version of `std::shared_ptr<HybridSoundSpec>`.

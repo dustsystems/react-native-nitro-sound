@@ -401,6 +401,34 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::shared_ptr<Promise<void>> startCommandRecognition() override {
+      auto __result = _swiftPart.startCommandRecognition();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<void>> stopCommandRecognition() override {
+      auto __result = _swiftPart.stopCommandRecognition();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline void setCommandResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) override {
+      auto __result = _swiftPart.setCommandResultCallback(callback);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void removeCommandResultCallback() override {
+      auto __result = _swiftPart.removeCommandResultCallback();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
 
   private:
     NitroSound::HybridSoundSpec_cxx _swiftPart;

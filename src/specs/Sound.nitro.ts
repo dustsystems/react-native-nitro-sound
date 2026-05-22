@@ -208,4 +208,32 @@ export interface Sound
    * @throws Error if file not found or speech recognition unavailable
    */
   transcribeAudioFile(filePath: string): Promise<string>;
+
+  // Live voice-command recognition (alarm "snooze"/"wake"/"record")
+  //
+  // Runs SFSpeechRecognizer INSIDE this engine, fed by the existing input tap
+  // (via the SPSC ring buffer + worker), instead of spinning up a second
+  // AVAudioEngine. This avoids the dual-engine microphone conflict that breaks
+  // recognition while the alarm audio is playing. See
+  // docs/voice-command-dual-engine-fix-implementation-plan.md.
+
+  /**
+   * Begin live recognition of short voice commands using the already-running
+   * engine + input tap. No-op-rejects if no engine/tap is active (i.e. before
+   * Start Journey) or while a fixed-duration recording is in progress.
+   */
+  startCommandRecognition(): Promise<void>;
+
+  /**
+   * Stop live command recognition. Leaves the engine, tap, and SPSC buffer
+   * intact (they are owned by the recording/session lifecycle).
+   */
+  stopCommandRecognition(): Promise<void>;
+
+  /**
+   * Register a callback invoked on partial + final recognition results.
+   * @param callback (text: best transcription so far, isFinal: whether this is a final result)
+   */
+  setCommandResultCallback(callback: (text: string, isFinal: boolean) => void): void;
+  removeCommandResultCallback(): void;
 }

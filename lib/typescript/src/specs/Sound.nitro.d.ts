@@ -152,5 +152,22 @@ export interface Sound extends HybridObject<{
      * @throws Error if file not found or speech recognition unavailable
      */
     transcribeAudioFile(filePath: string): Promise<string>;
+    /**
+     * Begin live recognition of short voice commands using the already-running
+     * engine + input tap. No-op-rejects if no engine/tap is active (i.e. before
+     * Start Journey) or while a fixed-duration recording is in progress.
+     */
+    startCommandRecognition(): Promise<void>;
+    /**
+     * Stop live command recognition. Leaves the engine, tap, and SPSC buffer
+     * intact (they are owned by the recording/session lifecycle).
+     */
+    stopCommandRecognition(): Promise<void>;
+    /**
+     * Register a callback invoked on partial + final recognition results.
+     * @param callback (text: best transcription so far, isFinal: whether this is a final result)
+     */
+    setCommandResultCallback(callback: (text: string, isFinal: boolean) => void): void;
+    removeCommandResultCallback(): void;
 }
 //# sourceMappingURL=Sound.nitro.d.ts.map
