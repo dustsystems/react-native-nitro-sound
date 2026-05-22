@@ -104,6 +104,10 @@ namespace margelo::nitro::sound {
       virtual std::string mmss(double secs) = 0;
       virtual std::string mmssss(double milisecs) = 0;
       virtual std::shared_ptr<Promise<std::string>> transcribeAudioFile(const std::string& filePath) = 0;
+      virtual std::shared_ptr<Promise<void>> startCommandRecognition() = 0;
+      virtual std::shared_ptr<Promise<void>> stopCommandRecognition() = 0;
+      virtual void setCommandResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) = 0;
+      virtual void removeCommandResultCallback() = 0;
 
     protected:
       // Hybrid Setup

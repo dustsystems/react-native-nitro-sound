@@ -28,6 +28,7 @@ namespace margelo::nitro::sound { struct PlaybackEndType; }
 #include "JFunc_void_std__string.hpp"
 #include "JFunc_void_std__string_std__string_bool_double.hpp"
 #include "JFunc_void.hpp"
+#include "JFunc_void_std__string_bool.hpp"
 
 namespace margelo::nitro::sound {
 
@@ -544,6 +545,44 @@ namespace margelo::nitro::sound {
       });
       return __promise;
     }();
+  }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::startCommandRecognition() {
+    static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("startCommandRecognition");
+    auto __result = method(_javaPart);
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::stopCommandRecognition() {
+    static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("stopCommandRecognition");
+    auto __result = method(_javaPart);
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  void JHybridSoundSpec::setCommandResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) {
+    static const auto method = javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string_bool::javaobject> /* callback */)>("setCommandResultCallback_cxx");
+    method(_javaPart, JFunc_void_std__string_bool_cxx::fromCpp(callback));
+  }
+  void JHybridSoundSpec::removeCommandResultCallback() {
+    static const auto method = javaClassStatic()->getMethod<void()>("removeCommandResultCallback");
+    method(_javaPart);
   }
 
 } // namespace margelo::nitro::sound

@@ -263,6 +263,27 @@ abstract class HybridSoundSpec: HybridObject() {
   @DoNotStrip
   @Keep
   abstract fun transcribeAudioFile(filePath: String): Promise<String>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun startCommandRecognition(): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun stopCommandRecognition(): Promise<Unit>
+  
+  abstract fun setCommandResultCallback(callback: (text: String, isFinal: Boolean) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setCommandResultCallback_cxx(callback: Func_void_std__string_bool): Unit {
+    val __result = setCommandResultCallback(callback)
+    return __result
+  }
+  
+  @DoNotStrip
+  @Keep
+  abstract fun removeCommandResultCallback(): Unit
 
   private external fun initHybrid(): HybridData
 

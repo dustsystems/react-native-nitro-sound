@@ -121,6 +121,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var workerConversionBuffer: AVAudioPCMBuffer?
     private var workerInputFormat: AVAudioFormat?  // 48kHz format from hardware
 
+    // MARK: - Live Voice-Command Recognition (single-engine, fed by the worker)
+    // SFSpeechRecognizer runs INSIDE this engine, consuming the same 16kHz buffers
+    // the worker already produces — no second AVAudioEngine, no microphone conflict.
+    // See docs/voice-command-dual-engine-fix-implementation-plan.md.
+    private var commandRecognizer: SFSpeechRecognizer?
+    private var commandRequest: SFSpeechAudioBufferRecognitionRequest?
+    private var commandTask: SFSpeechRecognitionTask?
+    private var commandResultCallback: ((String, Bool) -> Void)?
+    private var isCommandRecognitionActive: Bool = false
+    // Serializes command start/stop/restart so they don't race the worker thread.
+    private let commandControlQueue = DispatchQueue(label: "com.hypnos.commandRecognition")
+    private var commandRestartWorkItem: DispatchWorkItem?
+    private let commandRestartBackoff: TimeInterval = 0.25  // avoid tight error→restart storms
+
     // File writing
     private var currentSegmentFile: AVAudioFile?
     private var currentSegmentIsManual: Bool = false
@@ -697,6 +711,21 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.fixedDurationTimer?.cancel()
             self.fixedDurationTimer = nil
 
+            // Step 1c: Stop live command recognition if active (defensive — the
+            // alarm flow normally calls stopCommandRecognition() on its own).
+            self.commandControlQueue.sync {
+                guard self.isCommandRecognitionActive else { return }
+                self.isCommandRecognitionActive = false
+                self.commandRestartWorkItem?.cancel()
+                self.commandRestartWorkItem = nil
+                self.commandRequest?.endAudio()
+                self.commandTask?.cancel()
+                self.commandTask = nil
+                self.commandRequest = nil
+                self.commandRecognizer = nil
+                self.bridgedLog("🎙️🔴 [VC] command recognition stopped (endEngineSession)")
+            }
+
             // DISABLED: Stop VAD monitoring if active (autoVAD mode)
             // if self.currentMode == .autoVAD {
             //     self.stopVADMonitoring()
@@ -891,9 +920,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self?.drainAndProcess()
         }
 
-        // Stop worker
-        processingTimer?.cancel()
-        processingTimer = nil
+        // Stop worker only if command recognition isn't also using it
+        stopWorkerIfIdle()
 
         // Close file and get metadata
         guard let metadata = endCurrentSegmentWithoutCallback() else {
@@ -949,14 +977,33 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             return
         }
 
-        // Start worker queue
-        processingQueue = DispatchQueue(label: "com.hypnos.audioProcessing", qos: .userInitiated)
-        processingTimer = DispatchSource.makeTimerSource(queue: processingQueue)
-        processingTimer?.schedule(deadline: .now(), repeating: .milliseconds(10))
-        processingTimer?.setEventHandler { [weak self] in
+        // Start worker queue (shared between recording + command recognition)
+        ensureWorkerRunning()
+    }
+
+    /// Start the SPSC-draining worker if it isn't already running. Idempotent —
+    /// shared by recording sessions and live command recognition, so the worker
+    /// stays up as long as EITHER sink is active.
+    private func ensureWorkerRunning() {
+        guard processingTimer == nil else { return }
+        if processingQueue == nil {
+            processingQueue = DispatchQueue(label: "com.hypnos.audioProcessing", qos: .userInitiated)
+        }
+        let timer = DispatchSource.makeTimerSource(queue: processingQueue)
+        timer.schedule(deadline: .now(), repeating: .milliseconds(10))
+        timer.setEventHandler { [weak self] in
             self?.drainAndProcess()
         }
-        processingTimer?.resume()
+        timer.resume()
+        processingTimer = timer
+    }
+
+    /// Tear down the worker only when no sink needs it (neither recording nor
+    /// command recognition active). Leaves the engine, tap, and SPSC buffer intact.
+    private func stopWorkerIfIdle() {
+        guard !isRecordingSession, !isCommandRecognitionActive else { return }
+        processingTimer?.cancel()
+        processingTimer = nil
     }
 
     /// Stop the recording session - drains remaining audio and closes file
@@ -970,9 +1017,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self?.drainAndProcess()
         }
 
-        // Stop worker
-        processingTimer?.cancel()
-        processingTimer = nil
+        // Stop worker only if command recognition isn't also using it
+        stopWorkerIfIdle()
 
         // Close file and get metadata
         guard let metadata = endCurrentSegmentWithoutCallback() else {
@@ -997,7 +1043,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// Called every 10ms by the worker timer
     /// SIMPLIFIED: No VAD or silence detection - just resample and write
     private func drainAndProcess() {
-        guard isRecordingSession, let spsc = spscBuffer else { return }
+        // Worker runs while EITHER sink needs audio: file recording or live command recognition.
+        guard isRecordingSession || isCommandRecognitionActive, let spsc = spscBuffer else { return }
 
         // Process all available chunks
         while let (samples48k, frameLength) = spsc.read() {
@@ -1020,13 +1067,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // let audioIsLoud = runVADOnWorker(samples16k)
             // handleSilenceDetectionOnWorker(audioIsLoud: audioIsLoud)
 
-            // 2. Write to file
+            // 2. Write to file (recording sink)
             if isRecordingSession, let segmentFile = currentSegmentFile {
                 do {
                     try segmentFile.write(from: samples16k)
                 } catch {
                     // Silent fail to avoid log spam
                 }
+            }
+
+            // 3. Feed live command recognition (speech sink) — same 16kHz buffer.
+            if isCommandRecognitionActive {
+                commandRequest?.append(samples16k)
             }
         }
     }
@@ -2153,6 +2205,16 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         self.segmentCallback = callback
     }
 
+    public func setCommandResultCallback(callback: @escaping (String, Bool) -> Void) throws {
+        self.commandResultCallback = callback
+        bridgedLog("🎙️ Command result callback registered")
+    }
+
+    public func removeCommandResultCallback() throws {
+        self.commandResultCallback = nil
+        bridgedLog("🎙️ Command result callback removed")
+    }
+
     // DISABLED: Manual silence callback removed with simplified recording
     // public func setManualSilenceCallback(callback: @escaping () -> Void) throws {
     //     self.manualSilenceCallback = callback
@@ -2329,8 +2391,145 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 }
             }
         }
-        
+
         return promise
+    }
+
+    // MARK: - Live Voice-Command Recognition (single-engine)
+
+    /// Begin live recognition of short voice commands using the already-running
+    /// engine + input tap (no second AVAudioEngine). Audio is consumed from the
+    /// same SPSC buffer / worker that recording uses. See
+    /// docs/voice-command-dual-engine-fix-implementation-plan.md.
+    public func startCommandRecognition() throws -> Promise<Void> {
+        let promise = Promise<Void>()
+        commandControlQueue.async { [weak self] in
+            guard let self = self else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
+                return
+            }
+            if self.isCommandRecognitionActive {
+                self.bridgedLog("🎙️ [VC] command recognition already active")
+                promise.resolve(withResult: ())
+                return
+            }
+            // Requires a live engine + input tap — both are set up at Start Journey.
+            guard let engine = self.audioEngine, engine.isRunning, self.spscBuffer != nil else {
+                promise.reject(withError: RuntimeError.error(
+                    withMessage: "Command recognition requires a running engine + input tap"))
+                return
+            }
+            // Recording and command recognition share the single SPSC consumer —
+            // they must never run at once (FSM keeps them in separate phases).
+            guard !self.isRecordingSession else {
+                promise.reject(withError: RuntimeError.error(
+                    withMessage: "Cannot start command recognition during a recording session"))
+                return
+            }
+            guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
+                  recognizer.isAvailable else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Speech recognizer unavailable"))
+                return
+            }
+            self.commandRecognizer = recognizer
+
+            // Discard audio that piled up in the ring buffer while no consumer was
+            // draining it, so recognition starts from "now", not minutes-old audio.
+            while self.spscBuffer?.read() != nil {}
+
+            self.isCommandRecognitionActive = true
+            self.startCommandRecognitionTask()
+            self.ensureWorkerRunning()
+            self.bridgedLog("🎙️🟢 [VC] command recognition started")
+            promise.resolve(withResult: ())
+        }
+        return promise
+    }
+
+    /// Stop live command recognition. Leaves the engine, tap, and SPSC buffer
+    /// intact (owned by the recording/session lifecycle).
+    public func stopCommandRecognition() throws -> Promise<Void> {
+        let promise = Promise<Void>()
+        commandControlQueue.async { [weak self] in
+            guard let self = self else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
+                return
+            }
+            guard self.isCommandRecognitionActive else {
+                promise.resolve(withResult: ())
+                return
+            }
+            // Stop the worker feeding the request before tearing the request down.
+            self.isCommandRecognitionActive = false
+            self.commandRestartWorkItem?.cancel()
+            self.commandRestartWorkItem = nil
+            self.commandRequest?.endAudio()
+            self.commandTask?.cancel()
+            self.commandTask = nil
+            self.commandRequest = nil
+            self.commandRecognizer = nil
+            self.stopWorkerIfIdle()
+            self.bridgedLog("🎙️🔴 [VC] command recognition stopped")
+            promise.resolve(withResult: ())
+        }
+        return promise
+    }
+
+    /// Create a fresh recognition request + task. Called on `commandControlQueue`
+    /// at start and on each restart. SFSpeechAudioBufferRecognitionRequest self-
+    /// terminates (~1 min cap / silence / error), so we recreate it to listen
+    /// continuously across the alarm/snooze window.
+    private func startCommandRecognitionTask() {
+        // Tear down any previous request/task first.
+        commandTask?.cancel()
+        commandTask = nil
+        commandRequest?.endAudio()
+
+        guard let recognizer = commandRecognizer else { return }
+        let request = SFSpeechAudioBufferRecognitionRequest()
+        request.shouldReportPartialResults = true
+        // Use Apple's default/automatic recognition (NOT forced on-device). Forced
+        // on-device requires the locale's speech model to be provisioned by the
+        // system — which can't be guaranteed or triggered from the app on the
+        // SFSpeechRecognizer API, so it fails with kAFAssistantErrorDomain 1101 on
+        // devices where the model isn't installed (even with Dictation enabled).
+        // Automatic mode matches the original (pre-expo) voice-command behavior and
+        // the journal dictation path, which both work on-device hardware via Apple's
+        // speech service. Requires network.
+        request.requiresOnDeviceRecognition = false
+        commandRequest = request
+        bridgedLog("🎙️ [VC] recognition task started (automatic mode, supportsOnDevice: \(recognizer.supportsOnDeviceRecognition))")
+
+        commandTask = recognizer.recognitionTask(with: request) { [weak self] result, error in
+            guard let self = self else { return }
+            if let result = result {
+                let text = result.bestTranscription.formattedString
+                self.bridgedLog("🎙️ [VC] SR result: \"\(text)\" isFinal: \(result.isFinal)")
+                self.commandResultCallback?(text, result.isFinal)
+            }
+            if let error = error {
+                self.bridgedLog("⚠️ [VC] SR error: \(error.localizedDescription)")
+            }
+            // Restart on end (final result / ~1-min server cap / silence / error)
+            // while still active, with a backoff so a persistent failure can't spin
+            // in a tight loop.
+            if error != nil || (result?.isFinal ?? false) {
+                self.commandControlQueue.async { self.restartCommandTaskIfActive() }
+            }
+        }
+    }
+
+    /// Re-arm the recognition task after a backoff, if recognition is still active.
+    /// Runs on `commandControlQueue`.
+    private func restartCommandTaskIfActive() {
+        guard isCommandRecognitionActive else { return }
+        commandRestartWorkItem?.cancel()
+        let work = DispatchWorkItem { [weak self] in
+            guard let self = self, self.isCommandRecognitionActive else { return }
+            self.startCommandRecognitionTask()
+        }
+        commandRestartWorkItem = work
+        commandControlQueue.asyncAfter(deadline: .now() + commandRestartBackoff, execute: work)
     }
 
     // MARK: - Crossfade Methods

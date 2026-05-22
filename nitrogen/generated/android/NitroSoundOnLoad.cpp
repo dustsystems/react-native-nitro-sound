@@ -21,6 +21,7 @@
 #include "JFunc_void_std__string.hpp"
 #include "JFunc_void_std__string_std__string_bool_double.hpp"
 #include "JFunc_void.hpp"
+#include "JFunc_void_std__string_bool.hpp"
 #include <NitroModules/DefaultConstructableObject.hpp>
 
 namespace margelo::nitro::sound {
@@ -38,6 +39,7 @@ int initialize(JavaVM* vm) {
     margelo::nitro::sound::JFunc_void_std__string_cxx::registerNatives();
     margelo::nitro::sound::JFunc_void_std__string_std__string_bool_double_cxx::registerNatives();
     margelo::nitro::sound::JFunc_void_cxx::registerNatives();
+    margelo::nitro::sound::JFunc_void_std__string_bool_cxx::registerNatives();
 
     // Register Nitro Hybrid Objects
     HybridObjectRegistry::registerHybridObjectConstructor(
