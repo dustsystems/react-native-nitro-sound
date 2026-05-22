@@ -189,9 +189,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Setup audio session for recording + playback
         let audioSession = AVAudioSession.sharedInstance()
 
+        // .allowBluetoothA2DP lets .playAndRecord route output to A2DP-only Bluetooth
+        // devices (e.g. Ozlo Sleepbuds — A2DP/BLE only, no HFP mic). HFP-capable
+        // devices (AirPods etc.) are unaffected: iOS prefers HFP when both profiles
+        // are advertised. Without it, iOS finds no usable BT route for A2DP-only buds
+        // and falls back to the iPhone speaker. See docs/ozlo-sleepbuds-audio-routing.md.
         try audioSession.setCategory(.playAndRecord,
                                     mode: .default,
-                                    options: [.defaultToSpeaker, .allowBluetooth, .mixWithOthers])
+                                    options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
         if audioSession.maximumInputNumberOfChannels >= 1 {
             try? audioSession.setPreferredInputNumberOfChannels(1)
         }
