@@ -321,6 +321,69 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             name: .AVAudioEngineConfigurationChange,
             object: nil
         )
+
+        // Diagnostic-only: log a state snapshot on every route change (headphones
+        // plug/unplug, AirPlay, Bluetooth switch). Crucial for triaging
+        // "audio stopped suddenly" reports where the user changed output mid-play
+        // (DUS-41 / DUS-37) — pairs with the existing interruption snapshots.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleRouteChange),
+            name: AVAudioSession.routeChangeNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+
+        // Diagnostic-only: media services reset means iOS killed and restarted
+        // the audio subsystem (rare but fatal — all session/category state is
+        // lost). Capture it so we know whether silent-audio reports correlate
+        // with a reset event.
+        NotificationCenter.default.addObserver(
+            self,
+            selector: #selector(handleMediaServicesReset),
+            name: AVAudioSession.mediaServicesWereResetNotification,
+            object: AVAudioSession.sharedInstance()
+        )
+    }
+
+    @objc private func handleRouteChange(notification: Notification) {
+        let timestamp = formattedTimestamp()
+
+        // Decode reason (which audio-routing event triggered this)
+        var reasonString = "unknown"
+        if let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
+           let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) {
+            switch reason {
+            case .unknown:                      reasonString = "unknown"
+            case .newDeviceAvailable:           reasonString = "newDeviceAvailable (e.g. headphones plugged in)"
+            case .oldDeviceUnavailable:         reasonString = "oldDeviceUnavailable (e.g. headphones unplugged)"
+            case .categoryChange:               reasonString = "categoryChange"
+            case .override:                     reasonString = "override"
+            case .wakeFromSleep:                reasonString = "wakeFromSleep"
+            case .noSuitableRouteForCategory:   reasonString = "noSuitableRouteForCategory"
+            case .routeConfigurationChange:     reasonString = "routeConfigurationChange"
+            @unknown default:                   reasonString = "unknown (\(reasonValue))"
+            }
+        }
+
+        bridgedLog("╔════════════════════════════════════════════════════════════════╗")
+        bridgedLog("║  🎧 AUDIO ROUTE CHANGE                                         ║")
+        bridgedLog("╠════════════════════════════════════════════════════════════════╣")
+        bridgedLog("║  Time:    \(timestamp)")
+        bridgedLog("║  Reason:  \(reasonString)")
+        bridgedLog("╚════════════════════════════════════════════════════════════════╝")
+        logStateSnapshot(context: "route-change")
+    }
+
+    @objc private func handleMediaServicesReset(notification: Notification) {
+        let timestamp = formattedTimestamp()
+
+        bridgedLog("╔════════════════════════════════════════════════════════════════╗")
+        bridgedLog("║  💥 MEDIA SERVICES RESET                                       ║")
+        bridgedLog("╠════════════════════════════════════════════════════════════════╣")
+        bridgedLog("║  Time:    \(timestamp)")
+        bridgedLog("║  Impact:  Session/category state lost; audio handles invalid.")
+        bridgedLog("╚════════════════════════════════════════════════════════════════╝")
+        logStateSnapshot(context: "media-services-reset")
     }
 
     @objc private func handleEngineConfigurationChange(notification: Notification) {
