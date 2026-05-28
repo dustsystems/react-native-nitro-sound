@@ -365,11 +365,28 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
         }
 
+        // Decode the previous route from the notification payload so we can see the
+        // before → after transition in a single line (the missing piece for triaging
+        // "engine died on Bluetooth disconnect" reports).
+        var prevOut = "unknown"
+        var prevIn = "unknown"
+        if let prev = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription {
+            prevOut = prev.outputs.map { $0.portName }.joined(separator: ", ")
+            prevIn = prev.inputs.map { $0.portName }.joined(separator: ", ")
+        }
+        let session = AVAudioSession.sharedInstance()
+        let newOut = session.currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
+        let newIn = session.currentRoute.inputs.map { $0.portName }.joined(separator: ", ")
+        let newRate = Int(session.sampleRate)
+
         bridgedLog("╔════════════════════════════════════════════════════════════════╗")
         bridgedLog("║  🎧 AUDIO ROUTE CHANGE                                         ║")
         bridgedLog("╠════════════════════════════════════════════════════════════════╣")
         bridgedLog("║  Time:    \(timestamp)")
         bridgedLog("║  Reason:  \(reasonString)")
+        bridgedLog("║  Before:  out=[\(prevOut)]  in=[\(prevIn)]")
+        bridgedLog("║  After:   out=[\(newOut)]  in=[\(newIn)]  @ \(newRate)Hz")
+        bridgedLog("║  Engine:  running=\(audioEngine?.isRunning ?? false), initialized=\(audioEngineInitialized)")
         bridgedLog("╚════════════════════════════════════════════════════════════════╝")
         logStateSnapshot(context: "route-change")
     }
@@ -402,16 +419,50 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         bridgedLog("╚════════════════════════════════════════════════════════════════╝")
         logStateSnapshot(context: "engine-config-change")
 
+        // Diagnostic: capture node formats so we can see if a route change invalidated
+        // the connections baked at setup time (the format-mismatch -10868 hypothesis).
+        // The format on a connection is locked at engine.connect(...) time; if the
+        // current input/output hardware format differs, the baked connection is stale.
+        if let engine = audioEngine {
+            let inFormat = engine.inputNode.outputFormat(forBus: 0)
+            let outFormat = engine.outputNode.outputFormat(forBus: 0)
+            let mixFormat = engine.mainMixerNode.outputFormat(forBus: 0)
+            bridgedLog("🎚️ Node formats now — input: \(Int(inFormat.sampleRate))Hz/\(inFormat.channelCount)ch  output: \(Int(outFormat.sampleRate))Hz/\(outFormat.channelCount)ch  mixer: \(Int(mixFormat.sampleRate))Hz/\(mixFormat.channelCount)ch")
+        }
+
         // Only recover if we're in an active session and the engine stopped
-        guard engineInitialized, let engine = audioEngine, !engine.isRunning else { return }
+        guard engineInitialized, let engine = audioEngine, !engine.isRunning else {
+            if !engineInitialized {
+                bridgedLog("ℹ️ Config change: engine not initialized yet — no recovery needed")
+            } else if audioEngine?.isRunning == true {
+                bridgedLog("ℹ️ Config change: engine still running — iOS did not stop it for this event")
+            }
+            return
+        }
 
         bridgedLog("⚠️ Config change: engine stopped during active session, restarting...")
+        // The classic failure here is OSStatus -10868 (kAudioUnitErr_FormatNotSupported)
+        // when the route's new hardware format mismatches the player-node connections
+        // baked with format: nil at setup. See docs/bluetooth-killing-engine.md.
 
         do {
             try engine.start()
-            bridgedLog("✅ Engine restarted after config change")
+            bridgedLog("✅ Engine restarted after config change (running=\(engine.isRunning))")
         } catch {
-            bridgedLog("❌ Engine restart after config change failed: \(error.localizedDescription)")
+            let ns = error as NSError
+            bridgedLog("❌ Engine restart after config change FAILED — code: \(ns.code), domain: \(ns.domain), msg: \(error.localizedDescription)")
+            // Decode well-known codes inline so the log is self-explanatory in QA reports.
+            switch ns.code {
+            case -10868:
+                bridgedLog("   → -10868 = kAudioUnitErr_FormatNotSupported (graph baked to old hardware format; needs reconnect at current format)")
+            case 561145187:
+                bridgedLog("   → 561145187 = '!rec' = AVAudioSession cannotStartRecording (mic not grantable; likely backgrounded mic-denial path)")
+            case 2003329396:
+                bridgedLog("   → 2003329396 = 'what' = AVAudioSession unspecified failure (generic; often during route flap)")
+            default:
+                bridgedLog("   → unrecognized code")
+            }
+            bridgedLog("   Engine state after failure: running=\(engine.isRunning), initialized=\(engineInitialized)")
         }
     }
 
@@ -484,10 +535,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     bridgedLog("🔄 shouldResume=true, attempting engine.start()...")
                     do {
                         try engine.start()
-                        bridgedLog("✅ Engine restarted after interruption")
+                        bridgedLog("✅ Engine restarted after interruption (running=\(engine.isRunning))")
                     } catch {
-                        let nsError = error as NSError
-                        bridgedLog("❌ Engine restart after interruption failed: \(error.localizedDescription) (code: \(nsError.code))")
+                        let ns = error as NSError
+                        bridgedLog("❌ Engine restart after interruption FAILED — code: \(ns.code), domain: \(ns.domain), msg: \(error.localizedDescription)")
+                        switch ns.code {
+                        case -10868:
+                            bridgedLog("   → -10868 = kAudioUnitErr_FormatNotSupported (graph baked to old hardware format)")
+                        case 561145187:
+                            bridgedLog("   → 561145187 = '!rec' = AVAudioSession cannotStartRecording (mic not grantable)")
+                        case 2003329396:
+                            bridgedLog("   → 2003329396 = 'what' = AVAudioSession unspecified failure")
+                        default:
+                            bridgedLog("   → unrecognized code")
+                        }
                     }
                 } else {
                     bridgedLog("⏸️ shouldResume=false, not auto-restarting engine")
