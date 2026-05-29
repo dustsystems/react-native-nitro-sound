@@ -189,18 +189,43 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Setup audio session for recording + playback
         let audioSession = AVAudioSession.sharedInstance()
 
-        // .allowBluetoothA2DP lets .playAndRecord route output to A2DP-only Bluetooth
-        // devices (e.g. Ozlo Sleepbuds — A2DP/BLE only, no HFP mic). HFP-capable
-        // devices (AirPods etc.) are unaffected: iOS prefers HFP when both profiles
-        // are advertised. Without it, iOS finds no usable BT route for A2DP-only buds
-        // and falls back to the iPhone speaker. See docs/ozlo-sleepbuds-audio-routing.md.
+        // Output routing: .allowBluetoothA2DP lets .playAndRecord route output to A2DP
+        // buds (AirPods, Ozlo). We deliberately DO NOT set .allowBluetooth (HFP). HFP
+        // forces a Bluetooth headset into the low-rate bidirectional voice profile
+        // (~24kHz) so iOS can use the bud's mic — and that mic-driven downgrade is the
+        // root of the route-change engine death: the input node binds to 24kHz (AirPods
+        // HFP) and then can't reconcile to 48kHz when the route flips to the iPhone
+        // speaker, killing the engine with -10868 and never recovering in place.
+        // (See docs/bluetooth-killing-engine.md — full investigation, instances 1–6.)
+        // Dropping HFP keeps buds in A2DP (high-rate output only), and we take INPUT
+        // from the built-in mic instead (pinned below). Sleep buds have no usable mic
+        // and AirPods' mic is unhelpful at sleep, so we lose nothing.
         try audioSession.setCategory(.playAndRecord,
                                     mode: .default,
-                                    options: [.defaultToSpeaker, .allowBluetooth, .allowBluetoothA2DP, .mixWithOthers])
+                                    options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
         if audioSession.maximumInputNumberOfChannels >= 1 {
             try? audioSession.setPreferredInputNumberOfChannels(1)
         }
         try audioSession.setPreferredIOBufferDuration(0.0232)
+
+        // Pin INPUT to the built-in mic. This is the fix for the route-change engine
+        // death: the input node binds to one device/format at setup and AVAudioEngine
+        // does NOT re-read the input hardware in place (Apple-documented; recreating the
+        // engine is the only in-place refresh, and that crashes playback — see the doc).
+        // By pinning to the built-in mic, the input never changes when buds connect/
+        // disconnect, so the tap stays valid and only the OUTPUT side needs re-stamping
+        // on a route change. Must be set while the category is .playAndRecord.
+        if let inputs = audioSession.availableInputs,
+           let builtInMic = inputs.first(where: { $0.portType == .builtInMic }) {
+            do {
+                try audioSession.setPreferredInput(builtInMic)
+                bridgedLog("🎙️ Pinned input to built-in mic")
+            } catch {
+                bridgedLog("⚠️ setPreferredInput(builtInMic) failed: \(error.localizedDescription)")
+            }
+        } else {
+            bridgedLog("⚠️ Built-in mic not found in availableInputs — input not pinned")
+        }
 
         do {
             try audioSession.setActive(true)
@@ -252,6 +277,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let hwChannels = inputFormat.channelCount
             bridgedLog("🟩🟩🟩  🎙️ AUDIO ENGINE: PLAY+RECORD MODE 🎙️  🟩🟩🟩")
             bridgedLog("📊 Hardware: \(Int(hwSampleRate))Hz, \(hwChannels) channel(s)")
+            // Clean baseline: engine is now RUNNING, so in/out/mixer report their real
+            // settled formats (not the 44.1kHz default an unconnected mixer reports).
+            // This is the reference point to compare every later route-change snapshot against.
+            logStateSnapshot(context: "engine-setup-complete")
         } catch {
             let nsError = error as NSError
             bridgedLog("❌ Engine start failed: \(error.localizedDescription) (code: \(nsError.code))")
@@ -379,15 +408,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let newIn = session.currentRoute.inputs.map { $0.portName }.joined(separator: ", ")
         let newRate = Int(session.sampleRate)
 
-        bridgedLog("╔════════════════════════════════════════════════════════════════╗")
-        bridgedLog("║  🎧 AUDIO ROUTE CHANGE                                         ║")
-        bridgedLog("╠════════════════════════════════════════════════════════════════╣")
-        bridgedLog("║  Time:    \(timestamp)")
-        bridgedLog("║  Reason:  \(reasonString)")
-        bridgedLog("║  Before:  out=[\(prevOut)]  in=[\(prevIn)]")
-        bridgedLog("║  After:   out=[\(newOut)]  in=[\(newIn)]  @ \(newRate)Hz")
-        bridgedLog("║  Engine:  running=\(audioEngine?.isRunning ?? false), initialized=\(audioEngineInitialized)")
-        bridgedLog("╚════════════════════════════════════════════════════════════════╝")
+        bridgedLog("")
+        bridgedLog("🎧 ═══ AUDIO ROUTE CHANGE ═══════════════════")
+        bridgedLog("   time     \(timestamp)")
+        bridgedLog("   reason   \(reasonString)")
+        bridgedLog("   before   out=[\(prevOut)]   in=[\(prevIn)]")
+        bridgedLog("   after    out=[\(newOut)]   in=[\(newIn)]  @ \(newRate)Hz")
+        bridgedLog("   engine   running=\(audioEngine?.isRunning ?? false)   initialized=\(audioEngineInitialized)")
         logStateSnapshot(context: "route-change")
     }
 
@@ -410,60 +437,49 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let engineRunning = audioEngine?.isRunning ?? false
         let engineInitialized = audioEngineInitialized
 
-        bridgedLog("╔════════════════════════════════════════════════════════════════╗")
-        bridgedLog("║  ⚙️ AUDIO ENGINE CONFIGURATION CHANGE                          ║")
-        bridgedLog("╠════════════════════════════════════════════════════════════════╣")
-        bridgedLog("║  Time:              \(timestamp)")
-        bridgedLog("║  Engine Running:    \(engineRunning)")
-        bridgedLog("║  Engine Initialized: \(engineInitialized)")
-        bridgedLog("╚════════════════════════════════════════════════════════════════╝")
+        bridgedLog("")
+        bridgedLog("⚙️ ═══ ENGINE CONFIG CHANGE ═══════════════════")
+        bridgedLog("   time     \(timestamp)")
+        bridgedLog("   engine   running=\(engineRunning)   initialized=\(engineInitialized)")
         logStateSnapshot(context: "engine-config-change")
-
-        // Diagnostic: capture node formats so we can see if a route change invalidated
-        // the connections baked at setup time (the format-mismatch -10868 hypothesis).
-        // The format on a connection is locked at engine.connect(...) time; if the
-        // current input/output hardware format differs, the baked connection is stale.
-        if let engine = audioEngine {
-            let inFormat = engine.inputNode.outputFormat(forBus: 0)
-            let outFormat = engine.outputNode.outputFormat(forBus: 0)
-            let mixFormat = engine.mainMixerNode.outputFormat(forBus: 0)
-            bridgedLog("🎚️ Node formats now — input: \(Int(inFormat.sampleRate))Hz/\(inFormat.channelCount)ch  output: \(Int(outFormat.sampleRate))Hz/\(outFormat.channelCount)ch  mixer: \(Int(mixFormat.sampleRate))Hz/\(mixFormat.channelCount)ch")
-        }
 
         // Only recover if we're in an active session and the engine stopped
         guard engineInitialized, let engine = audioEngine, !engine.isRunning else {
             if !engineInitialized {
-                bridgedLog("ℹ️ Config change: engine not initialized yet — no recovery needed")
+                bridgedLog("   ↳ engine not initialized yet — no recovery needed")
             } else if audioEngine?.isRunning == true {
-                bridgedLog("ℹ️ Config change: engine still running — iOS did not stop it for this event")
+                bridgedLog("   ↳ engine still running — iOS did not stop it for this event")
             }
             return
         }
 
-        bridgedLog("⚠️ Config change: engine stopped during active session, restarting...")
-        // The classic failure here is OSStatus -10868 (kAudioUnitErr_FormatNotSupported)
-        // when the route's new hardware format mismatches the player-node connections
-        // baked with format: nil at setup. See docs/bluetooth-killing-engine.md.
+        bridgedLog("")
+        bridgedLog("🔧 ─── RECOVERY: engine stopped, restarting ───")
 
+        // Output-side recovery ONLY. With the input pinned to the built-in mic (see
+        // setupAudioEngine), the input never changes when buds connect/disconnect, so the
+        // input node + tap stay valid and need no surgery. Only the OUTPUT changed (e.g.
+        // AirPods → speaker), so we re-stamp the player→mixer connections at the current
+        // hardware format and restart. This is the proven fix — full investigation and
+        // why every input-recovery approach was rejected is in docs/bluetooth-killing-engine.md.
         do {
+            let players = [audioPlayerNodeA, audioPlayerNodeB, audioPlayerNodeC, audioPlayerNodeD].compactMap { $0 }
+            for player in players {
+                engine.disconnectNodeOutput(player)
+                engine.connect(player, to: engine.mainMixerNode, format: nil)
+            }
+            bridgedLog("   ① reconnected \(players.count) player(s) → mixer at current format")
+
+            engine.prepare()
             try engine.start()
-            bridgedLog("✅ Engine restarted after config change (running=\(engine.isRunning))")
+            let mixFmt = engine.mainMixerNode.outputFormat(forBus: 0)
+            let inFmt = engine.inputNode.outputFormat(forBus: 0)
+            bridgedLog("   ② ✅ engine restarted — running=\(engine.isRunning), mixer=\(Int(mixFmt.sampleRate))Hz, input=\(Int(inFmt.sampleRate))Hz (tap left intact)")
         } catch {
             let ns = error as NSError
-            bridgedLog("❌ Engine restart after config change FAILED — code: \(ns.code), domain: \(ns.domain), msg: \(error.localizedDescription)")
-            // Decode well-known codes inline so the log is self-explanatory in QA reports.
-            switch ns.code {
-            case -10868:
-                bridgedLog("   → -10868 = kAudioUnitErr_FormatNotSupported (graph baked to old hardware format; needs reconnect at current format)")
-            case 561145187:
-                bridgedLog("   → 561145187 = '!rec' = AVAudioSession cannotStartRecording (mic not grantable; likely backgrounded mic-denial path)")
-            case 2003329396:
-                bridgedLog("   → 2003329396 = 'what' = AVAudioSession unspecified failure (generic; often during route flap)")
-            default:
-                bridgedLog("   → unrecognized code")
-            }
-            bridgedLog("   Engine state after failure: running=\(engine.isRunning), initialized=\(engineInitialized)")
+            bridgedLog("   ❌ engine restart FAILED — code \(ns.code): \(error.localizedDescription)")
         }
+        bridgedLog("───────────────────────────────────────────────")
     }
 
     @objc private func handleAudioInterruption(notification: Notification) {
@@ -746,19 +762,44 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let engineInit = audioEngineInitialized
         let engineRun = audioEngine?.isRunning ?? false
 
-        // Session state
-        let category = session.category.rawValue
-        let isActive = session.isOtherAudioPlaying == false  // Indirect check
+        // Session state. Strip the verbose "AVAudioSessionCategory" prefix for readability.
+        let category = session.category.rawValue.replacingOccurrences(of: "AVAudioSessionCategory", with: "")
         let route = session.currentRoute.outputs.map { $0.portName }.joined(separator: ", ")
         let inputRoute = session.currentRoute.inputs.map { $0.portName }.joined(separator: ", ")
         let sampleRate = Int(session.sampleRate)
 
-        bridgedLog("📊 STATE SNAPSHOT [\(context)]:")
-        bridgedLog("   🎙️ Recording: segment=\(hasSegment), buffer=\(bufferCount) chunks")
-        bridgedLog("   🔧 Engine: init=\(engineInit), running=\(engineRun)")
-        bridgedLog("   🔊 Playback: loop=\(shouldLoopPlayback), ambient=\(isAmbientLoopPlaying)")
-        bridgedLog("   📡 Session: \(category), \(sampleRate)Hz")
-        bridgedLog("   📡 Routes: out=[\(route)], in=[\(inputRoute)]")
+        bridgedLog("")
+        bridgedLog("┌─ 📊 STATE · \(context)")
+        bridgedLog("│   engine     init=\(engineInit)   running=\(engineRun)")
+        bridgedLog("│   recording  segment=\(hasSegment)   buffer=\(bufferCount) chunks")
+        bridgedLog("│   playback   loop=\(shouldLoopPlayback)   ambient=\(isAmbientLoopPlaying)")
+        bridgedLog("│   session    \(category) @ \(sampleRate) Hz")
+        bridgedLog("│   route out  \(route.isEmpty ? "—" : route)")
+        bridgedLog("│   route in   \(inputRoute.isEmpty ? "—" : inputRoute)")
+
+        // Per-node engine formats. Logged on EVERY snapshot so we can watch
+        // input/output/mixer diverge during a route transition — input and output are
+        // SEPARATE hardware paths, not guaranteed equal (e.g. input 24kHz stale vs
+        // output 48kHz after a disconnect). Flag the divergence inline — it's the bug.
+        if let engine = audioEngine {
+            let inHz = Int(engine.inputNode.outputFormat(forBus: 0).sampleRate)
+            let outHz = Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)
+            let mixHz = Int(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate)
+            // The mismatch flag is only meaningful while the engine is RUNNING. When
+            // it's stopped/uninitialized, unconnected nodes report defaults (e.g. the
+            // mixer returns 44100Hz before it's wired into the graph), which would
+            // trip a false "mismatch". So only judge alignment when running.
+            let suffix: String
+            if engineRun {
+                suffix = (inHz == outHz && outHz == mixHz) ? "✓ aligned" : "⚠️ MISMATCH"
+            } else {
+                suffix = "(engine stopped — values may be defaults)"
+            }
+            bridgedLog("│   format     in=\(inHz)Hz   out=\(outHz)Hz   mixer=\(mixHz)Hz   \(suffix)")
+        } else {
+            bridgedLog("│   format     (engine not initialized)")
+        }
+        bridgedLog("└────────────────────────────────────────")
     }
 
 
