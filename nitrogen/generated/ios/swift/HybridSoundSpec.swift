@@ -60,6 +60,7 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func mmss(secs: Double) throws -> String
   func mmssss(milisecs: Double) throws -> String
   func transcribeAudioFile(filePath: String) throws -> Promise<String>
+  func concatAudioFiles(inputPaths: [String], outputPath: String) throws -> Promise<Double>
   func startCommandRecognition() throws -> Promise<Void>
   func stopCommandRecognition() throws -> Promise<Void>
   func setCommandResultCallback(callback: @escaping (_ text: String, _ isFinal: Bool) -> Void) throws -> Void

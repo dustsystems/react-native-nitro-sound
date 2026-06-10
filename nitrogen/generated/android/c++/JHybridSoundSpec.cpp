@@ -546,6 +546,30 @@ namespace margelo::nitro::sound {
       return __promise;
     }();
   }
+  std::shared_ptr<Promise<double>> JHybridSoundSpec::concatAudioFiles(const std::vector<std::string>& inputPaths, const std::string& outputPath) {
+    static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JArrayClass<jni::JString>> /* inputPaths */, jni::alias_ref<jni::JString> /* outputPath */)>("concatAudioFiles");
+    auto __result = method(_javaPart, [&]() {
+      size_t __size = inputPaths.size();
+      jni::local_ref<jni::JArrayClass<jni::JString>> __array = jni::JArrayClass<jni::JString>::newArray(__size);
+      for (size_t __i = 0; __i < __size; __i++) {
+        const auto& __element = inputPaths[__i];
+        __array->setElement(__i, *jni::make_jstring(__element));
+      }
+      return __array;
+    }(), jni::make_jstring(outputPath));
+    return [&]() {
+      auto __promise = Promise<double>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& __boxedResult) {
+        auto __result = jni::static_ref_cast<jni::JDouble>(__boxedResult);
+        __promise->resolve(__result->value());
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
   std::shared_ptr<Promise<void>> JHybridSoundSpec::startCommandRecognition() {
     static const auto method = javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("startCommandRecognition");
     auto __result = method(_javaPart);

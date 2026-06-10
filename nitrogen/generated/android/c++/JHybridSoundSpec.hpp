@@ -99,6 +99,7 @@ namespace margelo::nitro::sound {
     std::string mmss(double secs) override;
     std::string mmssss(double milisecs) override;
     std::shared_ptr<Promise<std::string>> transcribeAudioFile(const std::string& filePath) override;
+    std::shared_ptr<Promise<double>> concatAudioFiles(const std::vector<std::string>& inputPaths, const std::string& outputPath) override;
     std::shared_ptr<Promise<void>> startCommandRecognition() override;
     std::shared_ptr<Promise<void>> stopCommandRecognition() override;
     void setCommandResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) override;
