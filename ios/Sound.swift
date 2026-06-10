@@ -2633,31 +2633,49 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let request = SFSpeechURLRecognitionRequest(url: url)
             request.shouldReportPartialResults = false
 
+            // SFSpeech result handlers are multi-shot: a final result can be
+            // followed by a teardown/cancellation error (e.g. when the live
+            // wake-word recognizer starts a competing speech task). Nitro
+            // promises fatally assert on a second settle, so only the first
+            // settle wins.
+            let settleLock = NSLock()
+            var settled = false
+            func settleOnce(_ settle: () -> Void) {
+                settleLock.lock()
+                defer { settleLock.unlock() }
+                guard !settled else {
+                    self.bridgedLog("ℹ️ Ignored duplicate SFSpeech callback after promise settled")
+                    return
+                }
+                settled = true
+                settle()
+            }
+
             // Start recognition task
             recognizer.recognitionTask(with: request) { result, error in
-                if let error = error {
-                    promise.resolve(withResult: "No Speech Detected")
+                if error != nil {
+                    settleOnce { promise.resolve(withResult: "No Speech Detected") }
                     return
                 }
 
                 if let result = result, result.isFinal {
                     let transcription = result.bestTranscription.formattedString
                     if transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        promise.resolve(withResult: "No Speech Detected")
+                        settleOnce { promise.resolve(withResult: "No Speech Detected") }
                     } else {
                         self.bridgedLog("✅ Transcription complete: \(transcription.prefix(100))...")
-                        promise.resolve(withResult: transcription)
+                        settleOnce { promise.resolve(withResult: transcription) }
                     }
                 } else if let result = result {
                     let transcription = result.bestTranscription.formattedString
                     if transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        promise.resolve(withResult: "No Speech Detected")
+                        settleOnce { promise.resolve(withResult: "No Speech Detected") }
                     } else {
-                        promise.resolve(withResult: transcription)
+                        settleOnce { promise.resolve(withResult: transcription) }
                     }
                 } else {
                     self.bridgedLog("ℹ️ No speech detected in audio")
-                    promise.resolve(withResult: "No Speech Detected")
+                    settleOnce { promise.resolve(withResult: "No Speech Detected") }
                 }
             }
         }
