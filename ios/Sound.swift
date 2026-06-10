@@ -2489,6 +2489,106 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return String(format: "%02d:%02d:%02d", minutes, seconds, milliseconds)
     }
 
+    // MARK: - Audio File Concatenation
+
+    /// Lay the given audio files end-to-end in a single AVMutableComposition
+    /// track and export as one M4A. Resolves with the combined duration in
+    /// milliseconds. Any partial output file is removed on failure.
+    public func concatAudioFiles(inputPaths: [String], outputPath: String) throws -> Promise<Double> {
+        let promise = Promise<Double>()
+
+        func toFileURL(_ path: String) -> URL {
+            if path.hasPrefix("file://"), let url = URL(string: path) {
+                return url
+            }
+            return URL(fileURLWithPath: path)
+        }
+
+        guard inputPaths.count >= 2 else {
+            promise.reject(withError: RuntimeError.error(withMessage: "concatAudioFiles requires at least 2 input files"))
+            return promise
+        }
+
+        let inputURLs = inputPaths.map(toFileURL)
+        let outputURL = toFileURL(outputPath)
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            for url in inputURLs {
+                guard FileManager.default.fileExists(atPath: url.path) else {
+                    promise.reject(withError: RuntimeError.error(withMessage: "Input audio file not found: \(url.path)"))
+                    return
+                }
+            }
+
+            let composition = AVMutableComposition()
+            guard let compositionTrack = composition.addMutableTrack(
+                withMediaType: .audio,
+                preferredTrackID: kCMPersistentTrackID_Invalid
+            ) else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Could not create composition audio track"))
+                return
+            }
+
+            var cursor = CMTime.zero
+            for url in inputURLs {
+                let asset = AVURLAsset(url: url)
+                let duration = asset.duration
+                guard duration.isValid, !duration.isIndefinite, duration > .zero else {
+                    promise.reject(withError: RuntimeError.error(withMessage: "Could not read duration of: \(url.lastPathComponent)"))
+                    return
+                }
+                guard let sourceTrack = asset.tracks(withMediaType: .audio).first else {
+                    promise.reject(withError: RuntimeError.error(withMessage: "No audio track in file: \(url.lastPathComponent)"))
+                    return
+                }
+                do {
+                    try compositionTrack.insertTimeRange(
+                        CMTimeRange(start: .zero, duration: duration),
+                        of: sourceTrack,
+                        at: cursor
+                    )
+                } catch {
+                    promise.reject(withError: RuntimeError.error(withMessage: "Could not append \(url.lastPathComponent): \(error.localizedDescription)"))
+                    return
+                }
+                cursor = CMTimeAdd(cursor, duration)
+            }
+
+            // Overwrite any stale file at the destination — the export
+            // session refuses to write over an existing file.
+            try? FileManager.default.removeItem(at: outputURL)
+
+            guard let exportSession = AVAssetExportSession(
+                asset: composition,
+                presetName: AVAssetExportPresetAppleM4A
+            ) else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Could not create audio export session"))
+                return
+            }
+            exportSession.outputURL = outputURL
+            exportSession.outputFileType = .m4a
+
+            let totalMs = CMTimeGetSeconds(cursor) * 1000.0
+
+            // The completion closure captures exportSession strongly, keeping
+            // it alive for the duration of the export.
+            exportSession.exportAsynchronously {
+                switch exportSession.status {
+                case .completed:
+                    self?.bridgedLog("✅ Concatenated \(inputURLs.count) audio files (\(Int(totalMs)) ms) → \(outputURL.lastPathComponent)")
+                    promise.resolve(withResult: totalMs)
+                default:
+                    try? FileManager.default.removeItem(at: outputURL)
+                    let message = exportSession.error?.localizedDescription ?? "export status \(exportSession.status.rawValue)"
+                    self?.bridgedLog("❌ Audio concat export failed: \(message)")
+                    promise.reject(withError: RuntimeError.error(withMessage: "Audio concat export failed: \(message)"))
+                }
+            }
+        }
+
+        return promise
+    }
+
     // MARK: - Speech Recognition Methods
     public func transcribeAudioFile(filePath: String) throws -> Promise<String> {
         let promise = Promise<String>()

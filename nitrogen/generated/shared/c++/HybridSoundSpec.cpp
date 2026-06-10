@@ -60,6 +60,7 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("mmss", &HybridSoundSpec::mmss);
       prototype.registerHybridMethod("mmssss", &HybridSoundSpec::mmssss);
       prototype.registerHybridMethod("transcribeAudioFile", &HybridSoundSpec::transcribeAudioFile);
+      prototype.registerHybridMethod("concatAudioFiles", &HybridSoundSpec::concatAudioFiles);
       prototype.registerHybridMethod("startCommandRecognition", &HybridSoundSpec::startCommandRecognition);
       prototype.registerHybridMethod("stopCommandRecognition", &HybridSoundSpec::stopCommandRecognition);
       prototype.registerHybridMethod("setCommandResultCallback", &HybridSoundSpec::setCommandResultCallback);

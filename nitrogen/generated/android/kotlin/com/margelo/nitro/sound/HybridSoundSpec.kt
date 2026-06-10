@@ -266,6 +266,10 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
+  abstract fun concatAudioFiles(inputPaths: Array<String>, outputPath: String): Promise<Double>
+  
+  @DoNotStrip
+  @Keep
   abstract fun startCommandRecognition(): Promise<Unit>
   
   @DoNotStrip

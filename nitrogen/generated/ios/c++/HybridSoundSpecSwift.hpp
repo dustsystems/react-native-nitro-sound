@@ -401,6 +401,14 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::shared_ptr<Promise<double>> concatAudioFiles(const std::vector<std::string>& inputPaths, const std::string& outputPath) override {
+      auto __result = _swiftPart.concatAudioFiles(inputPaths, outputPath);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
     inline std::shared_ptr<Promise<void>> startCommandRecognition() override {
       auto __result = _swiftPart.startCommandRecognition();
       if (__result.hasError()) [[unlikely]] {

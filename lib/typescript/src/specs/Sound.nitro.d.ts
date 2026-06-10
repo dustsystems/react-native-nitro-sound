@@ -153,6 +153,22 @@ export interface Sound extends HybridObject<{
      */
     transcribeAudioFile(filePath: string): Promise<string>;
     /**
+     * Concatenate audio files end-to-end into a single M4A (AAC) file using
+     * AVMutableComposition. Inputs may be any AVFoundation-readable audio
+     * format; they are laid out in array order and exported as one track.
+     *
+     * Used by the dream journal "continue recording" flow to stitch a second
+     * recording slice onto the first instead of discarding it.
+     *
+     * @param inputPaths Ordered audio file paths (with or without file:// prefix)
+     * @param outputPath Destination .m4a path (with or without file:// prefix).
+     *                   An existing file at this path is overwritten.
+     * @returns Promise resolving to the combined duration in MILLISECONDS
+     * @throws Error if fewer than 2 inputs, an input is missing/unreadable,
+     *         or the export fails (output is cleaned up on failure)
+     */
+    concatAudioFiles(inputPaths: string[], outputPath: string): Promise<number>;
+    /**
      * Begin live recognition of short voice commands using the already-running
      * engine + input tap. No-op-rejects if no engine/tap is active (i.e. before
      * Start Journey) or while a fixed-duration recording is in progress.
