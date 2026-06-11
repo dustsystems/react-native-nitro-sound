@@ -62,6 +62,21 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // Track starting frame offset for getCurrentPosition after seek
     private var startingFrameOffset: AVAudioFramePosition = 0
 
+    // MARK: - Seek serialization & coalescing
+    // All player-node mutations from seeks run on this serial queue so two
+    // seeks can never thrash the same node concurrently.
+    private let playerMutationQueue = DispatchQueue(label: "com.dust.nitrosound.playerMutation")
+    private let seekStateLock = NSLock()
+    // Incremented synchronously per seekToPlayer call. A queued seek whose
+    // generation is stale bails without touching the node (last-wins).
+    private var seekGeneration: UInt64 = 0
+    // True from seekToPlayer call until the winning seek finishes; makes
+    // getCurrentPosition report the optimistic target during the window.
+    private var isSeekInFlight: Bool = false
+    // In-flight loop-crossfade fade timers. A seek cancels these so a
+    // fade-out completion can't stop() the node the seek just rescheduled.
+    private var loopFadeTimers: [DispatchSourceTimer] = []
+
     // Cache last valid position to avoid returning 0 during player state transitions
     private var lastValidPosition: Double = 0.0
 
@@ -1860,6 +1875,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         self.loopCrossfadeTimer?.cancel()
         self.loopCrossfadeTimer = nil
 
+        // A crossfade armed before a seek must not fire after it — cancel()
+        // alone can't stop a handler that has already been queued.
+        seekStateLock.lock()
+        let armedGeneration = seekGeneration
+        seekStateLock.unlock()
+
         // Create new timer
         let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
         timer.schedule(deadline: .now() + delay)
@@ -1872,7 +1893,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
 
-            self.triggerSeamlessLoopCrossfade(audioFile: audioFile, url: url)
+            // Serialize against seeks; re-check staleness inside the block
+            // in case a seek queued between fire and execution.
+            self.playerMutationQueue.async {
+                guard !self.isSeekSuperseded(armedGeneration) else {
+                    return
+                }
+                self.triggerSeamlessLoopCrossfade(audioFile: audioFile, url: url)
+            }
         }
 
         self.loopCrossfadeTimer = timer
@@ -1920,19 +1948,23 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let crossfadeStartTime = max(0, totalDuration - self.loopCrossfadeDuration)
         self.scheduleLoopCrossfade(after: crossfadeStartTime, audioFile: audioFile, url: url)
 
-        // Crossfade - use actual node volume, not stored playbackVolume
-        self.fadeVolume(node: oldNode, from: oldNode.volume, to: 0.0, duration: self.loopCrossfadeDuration) {
+        // Crossfade - use actual node volume, not stored playbackVolume.
+        // Both fade timers are tracked so a seek can cancel them — otherwise
+        // the fade-out completion stop()s the node the seek just rescheduled.
+        let fadeOut = self.fadeVolume(node: oldNode, from: oldNode.volume, to: 0.0, duration: self.loopCrossfadeDuration) {
             oldNode.stop()
             oldNode.reset()
         }
 
-        self.fadeVolume(node: newNode, from: 0.0, to: self.playbackVolume, duration: self.loopCrossfadeDuration) { [weak self] in
+        let fadeIn = self.fadeVolume(node: newNode, from: 0.0, to: self.playbackVolume, duration: self.loopCrossfadeDuration) { [weak self] in
             guard let self = self else { return }
             // Update current player reference and reset flag
             self.currentPlayerNode = newNode
             self.activePlayer = self.getPlayerEnum(for: newNode)
             self.isLoopCrossfadeActive = false
         }
+
+        self.loopFadeTimers = [fadeOut, fadeIn]
     }
 
     public func setLoopEnabled(enabled: Bool) throws -> Promise<String> {
@@ -2065,10 +2097,33 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     public func seekToPlayer(time: Double) throws -> Promise<String> {
         let promise = Promise<String>()
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            guard let self = self,
-                  let playerNode = self.currentPlayerNode,
+        // Claim a generation synchronously — later calls supersede this one.
+        seekStateLock.lock()
+        seekGeneration &+= 1
+        let generation = seekGeneration
+        isSeekInFlight = true
+        seekStateLock.unlock()
+
+        // Optimistic position cache: polls during the seek window report the
+        // target, not the stale pre-seek position. Re-clamped precisely below.
+        self.lastValidPosition = max(0, time)
+
+        playerMutationQueue.async { [weak self] in
+            guard let self = self else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Sound deallocated"))
+                return
+            }
+
+            // Superseded while queued → skip ALL work. The newest seek owns
+            // the node; this one never even stops it.
+            if self.isSeekSuperseded(generation) {
+                promise.resolve(withResult: "Seek superseded")
+                return
+            }
+
+            guard let playerNode = self.currentPlayerNode,
                   let audioFile = self.currentAudioFile else {
+                self.finishSeek(generation: generation)
                 promise.reject(withError: RuntimeError.error(withMessage: "No active playback"))
                 return
             }
@@ -2078,29 +2133,46 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let totalFrames = audioFile.length
             let timeInSeconds = time / 1000.0  // Convert milliseconds to seconds
             let targetFrame = AVAudioFramePosition(timeInSeconds * sampleRate)
-            let clampedFrame = max(0, min(targetFrame, totalFrames))
+            // Looping tracks must never land inside the final crossfade
+            // window — "seek to the end" would otherwise kill the loop.
+            let crossfadeFrames = AVAudioFramePosition(self.loopCrossfadeDuration * sampleRate)
+            let maxFrame = self.shouldLoopPlayback
+                ? max(0, totalFrames - crossfadeFrames - 1)
+                : totalFrames
+            let clampedFrame = max(0, min(targetFrame, maxFrame))
             let remainingFrames = totalFrames - clampedFrame
 
-            // Guard: If no frames left to play, stop playback
+            // Whether we're interrupting an active loop crossfade decides the
+            // volume to restore: mid-crossfade the node volume is transient.
+            let wasCrossfading = self.isLoopCrossfadeActive
+
+            // Cancel loop machinery BEFORE any early return — a stale armed
+            // crossfade timer must never fire against post-seek state.
+            self.loopCrossfadeTimer?.cancel()
+            self.loopCrossfadeTimer = nil
+            self.cancelLoopFades()
+            self.isLoopCrossfadeActive = false
+
+            // Guard: If no frames left to play, stop playback (non-looping
+            // only — looping targets were clamped before the crossfade window)
             guard remainingFrames > 0 else {
-                playerNode.stop()
+                self.stopAllPlayerNodes()
                 let seekTimeSeconds = Double(clampedFrame) / sampleRate
+                self.lastValidPosition = seekTimeSeconds * 1000.0
+                self.finishSeek(generation: generation)
                 promise.resolve(withResult: "Seeked to end (\(String(format: "%.1f", seekTimeSeconds))s)")
                 return
             }
 
-            // Preserve state
-            let wasPlaying = playerNode.isPlaying
-            let volume = playerNode.volume
+            // "Was playing" must consider ALL nodes: during a crossfade the
+            // incoming node is the one playing, not currentPlayerNode.
+            let wasPlaying = self.anyPlayerNodePlaying()
+            let volume = wasCrossfading ? self.playbackVolume : playerNode.volume
 
-            // Cancel old crossfade timer (invalidated by seek)
-            self.loopCrossfadeTimer?.cancel()
-            self.loopCrossfadeTimer = nil
-            self.isLoopCrossfadeActive = false
-
-            // Stop and reset
-            playerNode.stop()
-            playerNode.reset()
+            // Stop EVERY playback node, not just the current one — a seek
+            // during a loop crossfade otherwise leaves the incoming node
+            // playing underneath the seeked audio (double playback).
+            self.stopAllPlayerNodes()
 
             // Save the starting frame offset for getCurrentPosition
             self.startingFrameOffset = clampedFrame
@@ -2124,7 +2196,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 // Recalculate crossfade timing
                 let crossfadeStartTime = max(0, remainingDuration - self.loopCrossfadeDuration)
 
-                self.bridgedLog("🔍 Seeked to \(String(format: "%.2f", seekTime))s, crossfade in \(String(format: "%.2f", crossfadeStartTime))s")
+                self.bridgedLog("🔍 Seeked to \(String(format: "%.2f", seekTime))s, crossfade in \(String(format: "%.2f", crossfadeStartTime))s [gen \(generation)]")
 
                 // Get URL and reschedule crossfade
                 if let uri = self.currentPlaybackURI {
@@ -2147,7 +2219,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     startingFrame: clampedFrame,
                     frameCount: AVAudioFrameCount(remainingFrames),
                     at: nil
-                ) { [weak self] in
+                ) {
                     DispatchQueue.main.async {
                         playerNode.stop()
                     }
@@ -2165,10 +2237,48 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Update position cache to the seeked position (in milliseconds)
             self.lastValidPosition = seekTimeSeconds * 1000.0
 
+            self.finishSeek(generation: generation)
             promise.resolve(withResult: "Seeked to \(String(format: "%.1f", seekTimeSeconds))s")
         }
 
         return promise
+    }
+
+    private func isSeekSuperseded(_ generation: UInt64) -> Bool {
+        seekStateLock.lock()
+        defer { seekStateLock.unlock() }
+        return seekGeneration != generation
+    }
+
+    /// Clear the in-flight flag, but only if no newer seek has been claimed —
+    /// otherwise the newer seek still owns the optimistic-position window.
+    private func finishSeek(generation: UInt64) {
+        seekStateLock.lock()
+        if seekGeneration == generation {
+            isSeekInFlight = false
+        }
+        seekStateLock.unlock()
+    }
+
+    private func cancelLoopFades() {
+        for timer in loopFadeTimers {
+            timer.cancel()
+        }
+        loopFadeTimers = []
+    }
+
+    private func anyPlayerNodePlaying() -> Bool {
+        return [audioPlayerNodeA, audioPlayerNodeB, audioPlayerNodeC]
+            .contains { $0?.isPlaying == true }
+    }
+
+    /// Stop + reset the three playback nodes (NOT node D — ambient is
+    /// independent of seeks).
+    private func stopAllPlayerNodes() {
+        for node in [audioPlayerNodeA, audioPlayerNodeB, audioPlayerNodeC] {
+            node?.stop()
+            node?.reset()
+        }
     }
 
     public func setVolume(volume: Double) throws -> Promise<String> {
@@ -2299,6 +2409,16 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     public func getCurrentPosition() throws -> Promise<Double> {
         let promise = Promise<Double>()
+
+        // While a seek is in flight the node is mid stop/reschedule — report
+        // the optimistic target instead of a transient/stale node time.
+        seekStateLock.lock()
+        let seeking = isSeekInFlight
+        seekStateLock.unlock()
+        if seeking {
+            promise.resolve(withResult: self.lastValidPosition)
+            return promise
+        }
 
         guard let playerNode = self.currentPlayerNode,
               let audioFile = self.currentAudioFile,
@@ -3134,13 +3254,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
 
     // MARK: - Volume Fade Helper
+    @discardableResult
     private func fadeVolume(
         node: AVAudioPlayerNode,
         from startVolume: Float,
         to targetVolume: Float,
         duration: Double,
         completion: (() -> Void)? = nil
-    ) {
+    ) -> DispatchSourceTimer {
         let steps = 60
         let stepDuration = duration / Double(steps)
 
@@ -3184,6 +3305,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
 
         timer.resume()
+        return timer
     }
 
     // MARK: - Private Methods
@@ -3210,17 +3332,30 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // Removed stopRecordTimer - only needed for AVAudioRecorder
 
+    private var cachedDurationURL: URL?
+    private var cachedDurationSeconds: Double = 0
+
     /// Get actual playable duration in seconds for the current audio file
     /// For M4A files, uses AVAsset (respects iTunSMPB, excludes padding)
     /// For other formats, uses AVAudioFile
+    /// Memoized per URL — the 60ms play timer calls this every tick.
     private func getActualDurationSeconds(audioFile: AVAudioFile) -> Double {
         let fileURL = audioFile.url
+        if fileURL == cachedDurationURL {
+            return cachedDurationSeconds
+        }
+
+        let seconds: Double
         if fileURL.pathExtension.lowercased() == "m4a" {
             let asset = AVAsset(url: fileURL)
-            return CMTimeGetSeconds(asset.duration)
+            seconds = CMTimeGetSeconds(asset.duration)
         } else {
-            return Double(audioFile.length) / audioFile.fileFormat.sampleRate
+            seconds = Double(audioFile.length) / audioFile.fileFormat.sampleRate
         }
+
+        cachedDurationURL = fileURL
+        cachedDurationSeconds = seconds
+        return seconds
     }
 
     private func startPlayTimer() {
@@ -3297,9 +3432,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     var currentTimeMs: Double = 0
                     if let nodeTime = playerNode.lastRenderTime,
                        let playerTime = playerNode.playerTime(forNodeTime: nodeTime) {
-                        // Use audio file's sample rate, not hardware output rate
+                        // Use audio file's sample rate, not hardware output rate.
+                        // Include startingFrameOffset so the position is correct
+                        // after a seek (matches getCurrentPosition).
                         let sampleRate = audioFile.fileFormat.sampleRate
-                        currentTimeMs = Double(playerTime.sampleTime) / sampleRate * 1000
+                        currentTimeMs = Double(self.startingFrameOffset + playerTime.sampleTime) / sampleRate * 1000
                     }
 
                     let playBack = PlayBackType(
