@@ -1862,7 +1862,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Pre-schedule next iteration to prevent gaps (maintains buffer queue)
         primaryNode.scheduleFile(audioFile, at: nil, completionHandler: nil)
 
-        // Calculate when to trigger crossfade (20ms before end)
+        // Calculate when to trigger crossfade (loopCrossfadeDuration before end)
         let totalDuration = Double(audioFile.length) / audioFile.fileFormat.sampleRate
         let crossfadeStartTime = max(0, totalDuration - self.loopCrossfadeDuration)
 
@@ -2105,7 +2105,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         seekStateLock.unlock()
 
         // Optimistic position cache: polls during the seek window report the
-        // target, not the stale pre-seek position. Re-clamped precisely below.
+        // target, not the stale pre-seek position. Re-clamped precisely below,
+        // and rolled back if the seek can't run at all.
+        let previousValidPosition = self.lastValidPosition
         self.lastValidPosition = max(0, time)
 
         playerMutationQueue.async { [weak self] in
@@ -2123,6 +2125,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             guard let playerNode = self.currentPlayerNode,
                   let audioFile = self.currentAudioFile else {
+                // Roll back the optimistic write — the seek never happened,
+                // and the cache must not report a position the audio never
+                // reached.
+                self.lastValidPosition = previousValidPosition
                 self.finishSeek(generation: generation)
                 promise.reject(withError: RuntimeError.error(withMessage: "No active playback"))
                 return
@@ -2146,8 +2152,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // volume to restore: mid-crossfade the node volume is transient.
             let wasCrossfading = self.isLoopCrossfadeActive
 
-            // Cancel loop machinery BEFORE any early return — a stale armed
-            // crossfade timer must never fire against post-seek state.
+            // Cancel loop machinery before the seeked-to-end guard below — a
+            // stale armed crossfade timer must never fire against post-seek
+            // state. (The two bails above are exempt: superseded → the newer
+            // seek cancels instead; no-playback → stopPlayer already
+            // cancelled the timer before nil-ing currentAudioFile.)
             self.loopCrossfadeTimer?.cancel()
             self.loopCrossfadeTimer = nil
             self.cancelLoopFades()
@@ -3338,7 +3347,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// Get actual playable duration in seconds for the current audio file
     /// For M4A files, uses AVAsset (respects iTunSMPB, excludes padding)
     /// For other formats, uses AVAudioFile
-    /// Memoized per URL — the 60ms play timer calls this every tick.
+    /// Memoized for the current URL (single-entry cache) — the 60ms play
+    /// timer calls this every tick.
     private func getActualDurationSeconds(audioFile: AVAudioFile) -> Double {
         let fileURL = audioFile.url
         if fileURL == cachedDurationURL {
