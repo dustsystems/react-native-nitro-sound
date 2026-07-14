@@ -2222,17 +2222,26 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 }
 
             } else {
-                // Non-looping: schedule with completion handler
+                // Non-looping: schedule WITHOUT a completion handler. The
+                // handler fires when the segment's data is consumed OR when
+                // the node is stopped/reset — NOT when audio finishes (same
+                // trap as startPlayer's scheduleFile; see the warning there).
+                // A stop() inside it detonates on the NEXT seek:
+                // stopAllPlayerNodes() fires the stale handler, whose
+                // main-queue stop() lands after that seek's play() and
+                // silently kills the rescheduled audio — while the ambient
+                // node (D) keeps playing (DUS-771: "rewind mutes the voice
+                // but keeps the background"). End-of-track is handled the
+                // same way as startPlayer: the play timer's end detection
+                // below (offset-aware) and, in sessions, the JS playFor
+                // timeout.
                 playerNode.scheduleSegment(
                     audioFile,
                     startingFrame: clampedFrame,
                     frameCount: AVAudioFrameCount(remainingFrames),
-                    at: nil
-                ) {
-                    DispatchQueue.main.async {
-                        playerNode.stop()
-                    }
-                }
+                    at: nil,
+                    completionHandler: nil
+                )
             }
 
             // Restore state
@@ -3381,16 +3390,24 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 let durationSeconds = self.getActualDurationSeconds(audioFile: audioFile)
                 let durationMs = durationSeconds * 1000
 
-                // Get current playback position from audio hardware
+                // Get current playback position from audio hardware.
+                // Include startingFrameOffset — after a seek the node's
+                // sampleTime restarts at 0, so without the offset this
+                // understates the position by the seek target and end
+                // detection fires late by exactly that amount.
                 var currentTimeSeconds: Double = 0
                 if let nodeTime = playerNode.lastRenderTime,
                    let playerTime = playerNode.playerTime(forNodeTime: nodeTime) {
-                    currentTimeSeconds = Double(playerTime.sampleTime) / audioFile.fileFormat.sampleRate
+                    currentTimeSeconds = Double(self.startingFrameOffset + playerTime.sampleTime) / audioFile.fileFormat.sampleRate
                 }
 
                 // Check if we've reached the end of the audio file
-                // Use a small tolerance (0.05s) to account for timing precision
-                if playerNode.isPlaying && currentTimeSeconds >= (durationSeconds - 0.05) {
+                // Use a small tolerance (0.05s) to account for timing precision.
+                // Looping tracks never "reach the end" — the loop-crossfade
+                // machinery owns their lifecycle, and stopping here would
+                // kill the loop (reachable now that seeked positions carry
+                // the frame offset).
+                if !self.shouldLoopPlayback && playerNode.isPlaying && currentTimeSeconds >= (durationSeconds - 0.05) {
                     self.bridgedLog("🎯 Timer detected playback reached end at \(String(format: "%.2f", currentTimeSeconds))s / \(String(format: "%.2f", durationSeconds))s")
                     playerNode.stop()
                     // Next timer tick (60ms) will detect !isPlaying and fire completion
