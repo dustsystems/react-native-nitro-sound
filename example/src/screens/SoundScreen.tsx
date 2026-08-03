@@ -22,7 +22,6 @@ export function SoundScreen({ onBack }: { onBack: () => void }) {
   const soundRef = useRef(createSound());
   const [recordingPath, setRecordingPath] = useState('');
   const [volume, setVolume] = useState(1.0);
-  const [speed, setSpeed] = useState(1.0);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -117,7 +116,6 @@ export function SoundScreen({ onBack }: { onBack: () => void }) {
           : recordingPath || undefined;
       await soundRef.current.startPlayer(pathToPlay);
       await soundRef.current.setVolume(volume);
-      await soundRef.current.setPlaybackSpeed(speed);
       setIsPlaying(true);
       // Subscribe
       soundRef.current.addPlayBackListener((e) => {
@@ -328,18 +326,6 @@ export function SoundScreen({ onBack }: { onBack: () => void }) {
           onSlidingComplete={(v) => soundRef.current.setVolume(v)}
         />
         <Text style={styles.small}>{Math.round(volume * 100)}%</Text>
-
-        <Text style={styles.sectionTitle}>Speed</Text>
-        <Slider
-          style={styles.slider}
-          minimumValue={0.5}
-          maximumValue={2}
-          step={0.1}
-          value={speed}
-          onValueChange={(v) => setSpeed(v)}
-          onSlidingComplete={(v) => soundRef.current.setPlaybackSpeed(v)}
-        />
-        <Text style={styles.small}>{speed.toFixed(1)}x</Text>
 
         {recordingPath ? (
           <Text style={styles.path}>File: {recordingPath}</Text>

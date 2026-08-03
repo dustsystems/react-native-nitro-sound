@@ -21,7 +21,6 @@ import {
 export function SoundHookScreen({ onBack }: { onBack: () => void }) {
   const [recordingPath, setRecordingPath] = useState('');
   const [volume, setVolume] = useState(1.0);
-  const [speed, setSpeed] = useState(1.0);
   const [isRecording, setIsRecording] = useState(false);
   const [isPlaying, setIsPlaying] = useState(false);
   const [duration, setDuration] = useState(0);
@@ -36,8 +35,6 @@ export function SoundHookScreen({ onBack }: { onBack: () => void }) {
 
   const {
     startRecorder,
-    pauseRecorder,
-    resumeRecorder,
     stopRecorder,
     startPlayer,
     pausePlayer,
@@ -45,13 +42,8 @@ export function SoundHookScreen({ onBack }: { onBack: () => void }) {
     stopPlayer,
     seekToPlayer,
     setVolume: setVolumeApi,
-    setPlaybackSpeed: setPlaybackSpeedApi,
     mmssss,
   } = useSound({
-    onRecord: (e) => {
-      setIsRecording(e.isRecording ?? true);
-      setRecordPosition(e.currentPosition ?? 0);
-    },
     onPlayback: (e) => {
       setDuration(e.duration);
       setPlaybackPosition(e.currentPosition);
@@ -129,7 +121,6 @@ export function SoundHookScreen({ onBack }: { onBack: () => void }) {
           : recordingPath || undefined;
       await startPlayer(pathToPlay);
       await setVolumeApi(volume);
-      await setPlaybackSpeedApi(speed);
       setIsPlaying(true);
     } catch (e) {
       Alert.alert('Play error', String(e));
@@ -344,18 +335,6 @@ export function SoundHookScreen({ onBack }: { onBack: () => void }) {
           onSlidingComplete={(v) => setVolumeApi(v)}
         />
         <Text style={styles.small}>{Math.round(volume * 100)}%</Text>
-
-        <Text style={styles.sectionTitle}>Speed</Text>
-        <Slider
-          style={styles.slider}
-          minimumValue={0.5}
-          maximumValue={2}
-          step={0.1}
-          value={speed}
-          onValueChange={(v) => setSpeed(v)}
-          onSlidingComplete={(v) => setPlaybackSpeedApi(v)}
-        />
-        <Text style={styles.small}>{speed.toFixed(1)}x</Text>
 
         {recordingPath ? (
           <Text style={styles.path}>File: {recordingPath}</Text>

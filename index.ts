@@ -1,20 +1,20 @@
-// Re-export the default instance and types from the main implementation
-export { default } from './src/index';
-export * from './src/index';
+// Re-export types and interfaces from the nitro module
+export * from './src/specs/Sound.nitro';
 
-// Re-export types from the nitro module
+// Export specific types that exist in Sound.nitro.ts
 export type {
-  AudioSet,
   RecordBackType,
   PlayBackType,
-  AVEncodingOption,
-  AVModeIOSOption,
+  PlaybackEndType,
+  RecordBackListener,
+  PlayBackListener,
+  PlaybackEndListener,
+  Sound,
 } from './src/specs/Sound.nitro';
 
+// Export Android enums that exist in Sound.nitro.ts
 export {
   AudioSourceAndroidType,
   OutputFormatAndroidType,
   AudioEncoderAndroidType,
-  AVEncoderAudioQualityIOSType,
-  AVLinearPCMBitDepthKeyIOSType,
 } from './src/specs/Sound.nitro';

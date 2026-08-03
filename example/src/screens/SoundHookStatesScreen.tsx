@@ -21,7 +21,6 @@ import {
 export function SoundHookStatesScreen({ onBack }: { onBack: () => void }) {
   const [recordingPath, setRecordingPath] = useState('');
   const [volume, setVolume] = useState(1.0);
-  const [speed, setSpeed] = useState(1.0);
   const [isRecordLoading, setIsRecordLoading] = useState(false);
   const [isStopLoading, setIsStopLoading] = useState(false);
   const [loadingMessage, setLoadingMessage] = useState('Loading...');
@@ -30,8 +29,6 @@ export function SoundHookStatesScreen({ onBack }: { onBack: () => void }) {
   const {
     state,
     startRecorder,
-    pauseRecorder,
-    resumeRecorder,
     stopRecorder,
     startPlayer,
     pausePlayer,
@@ -39,7 +36,6 @@ export function SoundHookStatesScreen({ onBack }: { onBack: () => void }) {
     stopPlayer,
     seekToPlayer,
     setVolume: setVolumeApi,
-    setPlaybackSpeed: setPlaybackSpeedApi,
     mmssss,
   } = useSoundWithStates();
 
@@ -97,7 +93,6 @@ export function SoundHookStatesScreen({ onBack }: { onBack: () => void }) {
           : recordingPath || undefined;
       await startPlayer(pathToPlay);
       await setVolumeApi(volume);
-      await setPlaybackSpeedApi(speed);
     } catch (e) {
       Alert.alert('Play error', String(e));
     } finally {
@@ -298,18 +293,6 @@ export function SoundHookStatesScreen({ onBack }: { onBack: () => void }) {
           onSlidingComplete={(v) => setVolumeApi(v)}
         />
         <Text style={styles.small}>{Math.round(volume * 100)}%</Text>
-
-        <Text style={styles.sectionTitle}>Speed</Text>
-        <Slider
-          style={styles.slider}
-          minimumValue={0.5}
-          maximumValue={2}
-          step={0.1}
-          value={speed}
-          onValueChange={(v) => setSpeed(v)}
-          onSlidingComplete={(v) => setPlaybackSpeedApi(v)}
-        />
-        <Text style={styles.small}>{speed.toFixed(1)}x</Text>
 
         {recordingPath ? (
           <Text style={styles.path}>File: {recordingPath}</Text>

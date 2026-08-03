@@ -1,4 +1,14 @@
 {
   "extends": "./tsconfig",
-  "exclude": ["example", "lib"]
+  "compilerOptions": {
+    "declaration": true,
+    "emitDeclarationOnly": true,
+    "outDir": "lib/typescript",
+    "skipLibCheck": true,
+    "composite": true,
+    "jsx": "react",
+    "declarationMap": true
+  },
+  "include": ["src/**/*"],
+  "exclude": ["example", "lib", "src/__tests__"]
 }

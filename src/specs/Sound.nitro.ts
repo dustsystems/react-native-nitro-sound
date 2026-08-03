@@ -39,90 +39,6 @@ export enum AudioEncoderAndroidType {
   VORBIS = 6,
 }
 
-export type AVEncodingOption =
-  | 'lpcm'
-  | 'ima4'
-  | 'aac'
-  | 'MAC3'
-  | 'MAC6'
-  | 'ulaw'
-  | 'alaw'
-  | 'mp1'
-  | 'mp2'
-  | 'mp4'
-  | 'alac'
-  | 'amr'
-  | 'flac'
-  | 'opus';
-
-export type AVModeIOSOption =
-  | 'gameChatAudio'
-  | 'measurement'
-  | 'moviePlayback'
-  | 'spokenAudio'
-  | 'videoChat'
-  | 'videoRecording'
-  | 'voiceChat'
-  | 'voicePrompt';
-
-export enum AVEncoderAudioQualityIOSType {
-  min = 0,
-  low = 0x20,
-  medium = 0x40,
-  high = 0x60,
-  max = 0x7f,
-}
-
-export enum AVLinearPCMBitDepthKeyIOSType {
-  bit8 = 8,
-  bit16 = 16,
-  bit24 = 24,
-  bit32 = 32,
-}
-
-// Types
-export type AudioQualityType = 'low' | 'medium' | 'high';
-
-// Interfaces
-// Platform-specific audio settings
-export interface IOSAudioSet {
-  AVEncoderAudioQualityKeyIOS?: AVEncoderAudioQualityIOSType;
-  AVModeIOS?: AVModeIOSOption;
-  AVEncodingOptionIOS?: AVEncodingOption;
-  AVFormatIDKeyIOS?: AVEncodingOption;
-  AVNumberOfChannelsKeyIOS?: number;
-  AVLinearPCMBitDepthKeyIOS?: AVLinearPCMBitDepthKeyIOSType;
-  AVLinearPCMIsBigEndianKeyIOS?: boolean;
-  AVLinearPCMIsFloatKeyIOS?: boolean;
-  AVLinearPCMIsNonInterleavedIOS?: boolean;
-  AVSampleRateKeyIOS?: number;
-}
-
-export interface AndroidAudioSet {
-  AudioSourceAndroid?: AudioSourceAndroidType;
-  OutputFormatAndroid?: OutputFormatAndroidType;
-  AudioEncoderAndroid?: AudioEncoderAndroidType;
-}
-
-export interface CommonAudioSet {
-  AudioQuality?: AudioQualityType;
-  AudioChannels?: number;
-  AudioSamplingRate?: number;
-  AudioEncodingBitRate?: number;
-  IncludeBase64?: boolean;
-}
-
-export interface AudioSet
-  extends IOSAudioSet,
-    AndroidAudioSet,
-    CommonAudioSet {}
-
-export interface RecordBackType {
-  isRecording?: boolean;
-  currentPosition: number;
-  currentMetering?: number;
-  recordSecs?: number;
-}
 
 export interface PlayBackType {
   isMuted?: boolean;
@@ -135,21 +51,50 @@ export interface PlaybackEndType {
   currentPosition: number;
 }
 
-export type RecordBackListener = (recordingMeta: RecordBackType) => void;
 export type PlayBackListener = (playbackMeta: PlayBackType) => void;
 export type PlaybackEndListener = (playbackEndMeta: PlaybackEndType) => void;
 
 export interface Sound
   extends HybridObject<{ ios: 'swift'; android: 'kotlin' }> {
-  // Recording methods
-  startRecorder(
-    uri?: string,
-    audioSets?: AudioSet,
-    meteringEnabled?: boolean
-  ): Promise<string>;
-  pauseRecorder(): Promise<string>;
-  resumeRecorder(): Promise<string>;
-  stopRecorder(): Promise<string>;
+  // Recording methods (unified AVAudioEngine with speech detection)
+  startRecorder(): Promise<void>;
+  stopRecorder(): Promise<void>;
+  /**
+   * End the engine session and completely destroy all audio resources.
+   * This performs a full teardown:
+   * - Ends any active recording segments
+   * - Stops all playback
+   * - Stops the audio engine
+   * - Deactivates the audio session (removes microphone indicator)
+   * - Destroys the engine instance (forces clean re-initialization)
+   *
+   * Call this when stopping a sleep session to ensure the microphone
+   * indicator disappears and all audio resources are released.
+   */
+  endEngineSession(): Promise<void>;
+
+  // Simple fixed-duration recording API
+
+  /**
+   * Begin recording with a maximum duration.
+   * Recording automatically stops when the duration is reached.
+   * Can be stopped early with endRecording().
+   *
+   * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
+   */
+  beginRecording(maxDurationSeconds: number): Promise<void>;
+
+  /**
+   * End recording early (before max duration is reached).
+   * If no recording is active, this is a no-op.
+   */
+  endRecording(): Promise<void>;
+
+  /**
+   * Check if recording is currently active.
+   * @returns true if actively recording, false otherwise
+   */
+  isSegmentRecording(): Promise<boolean>;
 
   // Playback methods
   startPlayer(
@@ -161,16 +106,51 @@ export interface Sound
   resumePlayer(): Promise<string>;
   seekToPlayer(time: number): Promise<string>;
   setVolume(volume: number): Promise<string>;
-  setPlaybackSpeed(playbackSpeed: number): Promise<string>;
 
-  // Subscription
-  setSubscriptionDuration(sec: number): void;
+  // Now Playing (lock screen controls)
+  /**
+   * Update Now Playing info on lock screen
+   * @param title Track title to display
+   * @param artist Artist name (optional)
+   * @param duration Total duration in seconds
+   * @param currentTime Current playback position in seconds
+   */
+  updateNowPlaying(
+    title: string,
+    artist: string,
+    duration: number,
+    currentTime: number
+  ): Promise<void>;
+
+  /**
+   * Clear Now Playing info from lock screen
+   */
+  clearNowPlaying(): Promise<void>;
+
+  /**
+   * Set artwork for Now Playing lock screen display
+   * @param imagePath Path to the image file (local file path)
+   */
+  setNowPlayingArtwork(imagePath: string): Promise<void>;
+
+  // Position/duration query methods (milliseconds)
+  getCurrentPosition(): Promise<number>;
+  getDuration(): Promise<number>;
+
+  // Loop control methods
+  setLoopEnabled(enabled: boolean): Promise<string>;
+
+  // Crossfade methods
+  crossfadeTo(uri: string, duration?: number, targetVolume?: number): Promise<string>;
+
+  // Volume fade (smooth native fade using equal-power curve)
+  fadeVolumeTo(targetVolume: number, duration: number): Promise<void>;
+
+  // Ambient loop methods
+  startAmbientLoop(uri: string, volume: number, fadeDuration?: number): Promise<void>;
+  stopAmbientLoop(fadeDuration?: number): Promise<void>;
 
   // Listeners
-  addRecordBackListener(
-    callback: (recordingMeta: RecordBackType) => void
-  ): void;
-  removeRecordBackListener(): void;
   addPlayBackListener(callback: (playbackMeta: PlayBackType) => void): void;
   removePlayBackListener(): void;
   addPlaybackEndListener(
@@ -178,7 +158,54 @@ export interface Sound
   ): void;
   removePlaybackEndListener(): void;
 
+  // Logging methods
+  setLogCallback(callback: (message: string) => void): void;
+
+  // Speech segment callback (called when a new segment file is written)
+  setSegmentCallback(callback: (filename: string, filePath: string, isManual: boolean, duration: number) => void): void;
+
+  // Lock screen track navigation callbacks
+  setNextTrackCallback(callback: () => void): void;
+  removeNextTrackCallback(): void;
+  setPreviousTrackCallback(callback: () => void): void;
+  removePreviousTrackCallback(): void;
+
+  // Lock screen pause/play callbacks (to sync UI with lock screen controls)
+  setPauseCallback(callback: () => void): void;
+  removePauseCallback(): void;
+  setPlayCallback(callback: () => void): void;
+  removePlayCallback(): void;
+
+  /**
+   * Completely tear down remote command center - removes all targets and clears Now Playing.
+   * Widget will disappear as if it was never configured.
+   * Call this when transitioning to night phase to hide lock screen controls.
+   */
+  teardownRemoteCommands(): Promise<void>;
+
+  // Debug logging methods
+  writeDebugLog(message: string): void;
+  getAllDebugLogPaths(): string[];
+  readDebugLog(path?: string): string;
+  clearDebugLogs(): Promise<void>;
+  setDebugLogUserIdentifier(identifier: string): void;
+
+  /**
+   * Write session summary to the debug log file.
+   * Includes error/warning counts and session duration.
+   * Call this before generating bug reports or when app backgrounds.
+   */
+  writeDebugLogSummary(): void;
+
   // Utility methods
   mmss(secs: number): string;
   mmssss(milisecs: number): string;
+
+  /**
+   * Transcribe an audio file to text using iOS Speech Recognition
+   * @param filePath Path to audio file (with or without file:// prefix)
+   * @returns Promise resolving to transcribed text
+   * @throws Error if file not found or speech recognition unavailable
+   */
+  transcribeAudioFile(filePath: string): Promise<string>;
 }

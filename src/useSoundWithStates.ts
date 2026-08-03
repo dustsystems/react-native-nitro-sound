@@ -1,13 +1,12 @@
 import { useMemo, useState } from 'react';
 import type { UseSound, UseSoundOptions } from './useSound';
 import { useSound } from './useSound';
-import type { PlayBackType, RecordBackType } from './specs/Sound.nitro';
+import type { PlayBackType } from './specs/Sound.nitro';
 
 export type UseSoundWithStatesState = {
   isRecording: boolean;
   isPlaying: boolean;
   playback: { position: number; duration: number };
-  recording: { position: number };
 };
 
 export type UseSoundWithStates = Omit<UseSound, 'state'> & {
@@ -21,21 +20,10 @@ export function useSoundWithStates(
     isRecording: false,
     isPlaying: false,
     playback: { position: 0, duration: 0 },
-    recording: { position: 0 },
   });
 
   const base = useSound({
     ...options,
-    onRecord: (e: RecordBackType & { ended?: boolean }) => {
-      options.onRecord?.(e);
-      setState((s) => ({
-        ...s,
-        isRecording: e.isRecording ?? true,
-        recording: {
-          position: e.currentPosition ?? s.recording.position,
-        },
-      }));
-    },
     onPlayback: (e: PlayBackType & { ended?: boolean }) => {
       options.onPlayback?.(e);
       const ended =

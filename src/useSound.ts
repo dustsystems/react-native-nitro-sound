@@ -2,15 +2,12 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type {
   Sound as SoundType,
   PlayBackType,
-  RecordBackType,
 } from './specs/Sound.nitro';
 import { ensureSoundActivation } from './utils/sound';
 
 export type UseSoundOptions = {
-  subscriptionDuration?: number; // seconds (aligns with native API)
   autoDispose?: boolean; // default true, dispose on unmount
   // Optional listeners (forward native events to the app)
-  onRecord?: (e: RecordBackType & { ended?: boolean }) => void;
   onPlayback?: (e: PlayBackType & { ended?: boolean }) => void;
   onPlaybackEnd?: (e: { duration: number; currentPosition: number }) => void;
 };
@@ -27,8 +24,6 @@ export type UseSound = {
   state: UseSoundState;
   // Recording
   startRecorder: SoundType['startRecorder'];
-  pauseRecorder: SoundType['pauseRecorder'];
-  resumeRecorder: SoundType['resumeRecorder'];
   stopRecorder: SoundType['stopRecorder'];
   // Playback
   startPlayer: SoundType['startPlayer'];
@@ -37,16 +32,12 @@ export type UseSound = {
   stopPlayer: SoundType['stopPlayer'];
   seekToPlayer: SoundType['seekToPlayer'];
   setVolume: SoundType['setVolume'];
-  setPlaybackSpeed: SoundType['setPlaybackSpeed'];
-  // Utils
-  mmss: SoundType['mmss'];
-  mmssss: SoundType['mmssss'];
   // Lifecycle
   dispose: () => void;
 };
 
 export function useSound(options: UseSoundOptions = {}): UseSound {
-  const { subscriptionDuration, autoDispose = true } = options;
+  const { autoDispose = true } = options;
 
   const soundRef = useRef<SoundType | null>(null);
 
@@ -57,25 +48,10 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
     currentPosition: 0,
   });
 
-  // Configure subscription duration
-  useEffect(() => {
-    if (subscriptionDuration != null) {
-      ensureSoundActivation(soundRef).setSubscriptionDuration(
-        subscriptionDuration
-      );
-    }
-  }, [subscriptionDuration]);
-
   // Attach listeners: forward native events to user callbacks instead of updating React state
   useEffect(() => {
     const sound = ensureSoundActivation(soundRef);
-    const lastRecordRef = { current: null as RecordBackType | null };
     const lastPlaybackRef = { current: null as PlayBackType | null };
-
-    const onRecord: (e: RecordBackType) => void = (e) => {
-      lastRecordRef.current = e;
-      options.onRecord?.({ ...e, ended: e.isRecording === false });
-    };
 
     const onPlay: (e: PlayBackType) => void = (e) => {
       lastPlaybackRef.current = e;
@@ -97,12 +73,10 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
       setState((s) => ({ ...s, isPlaying: false }));
     };
 
-    sound.addRecordBackListener(onRecord);
     sound.addPlayBackListener(onPlay);
     sound.addPlaybackEndListener(onPlayEnd);
 
     return () => {
-      sound.removeRecordBackListener();
       sound.removePlayBackListener();
       sound.removePlaybackEndListener();
     };
@@ -120,30 +94,11 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
     []
   );
 
-  const pauseRecorder = useCallback<SoundType['pauseRecorder']>(async () => {
-    const res = await ensureSoundActivation(soundRef).pauseRecorder();
-    setState((s) => ({ ...s, isRecording: false }));
-    return res;
-  }, []);
-
-  const resumeRecorder = useCallback<SoundType['resumeRecorder']>(async () => {
-    const res = await ensureSoundActivation(soundRef).resumeRecorder();
-    setState((s) => ({ ...s, isRecording: true }));
-    return res;
-  }, []);
-
   const stopRecorder = useCallback<SoundType['stopRecorder']>(async () => {
     const res = await ensureSoundActivation(soundRef).stopRecorder();
     setState((s) => ({ ...s, isRecording: false }));
-    // Inform consumer that recording ended
-    options.onRecord?.({
-      isRecording: false,
-      currentPosition: 0,
-      recordSecs: 0,
-      ended: true,
-    });
     return res;
-  }, [options]);
+  }, []);
 
   const startPlayer = useCallback<SoundType['startPlayer']>(async (...args) => {
     const res = await ensureSoundActivation(soundRef).startPlayer(...args);
@@ -179,13 +134,6 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
     return ensureSoundActivation(soundRef).setVolume(v);
   }, []);
 
-  const setPlaybackSpeed = useCallback<SoundType['setPlaybackSpeed']>(
-    async (sp) => {
-      return ensureSoundActivation(soundRef).setPlaybackSpeed(sp);
-    },
-    []
-  );
-
   const mmss = useCallback<SoundType['mmss']>(
     (secs) => ensureSoundActivation(soundRef).mmss(secs),
     []
@@ -213,8 +161,6 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
       sound: ensureSoundActivation(soundRef),
       state,
       startRecorder,
-      pauseRecorder,
-      resumeRecorder,
       stopRecorder,
       startPlayer,
       pausePlayer,
@@ -222,7 +168,6 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
       stopPlayer,
       seekToPlayer,
       setVolume,
-      setPlaybackSpeed,
       mmss,
       mmssss,
       dispose,
@@ -230,8 +175,6 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
     [
       state,
       startRecorder,
-      pauseRecorder,
-      resumeRecorder,
       stopRecorder,
       startPlayer,
       pausePlayer,
@@ -239,7 +182,6 @@ export function useSound(options: UseSoundOptions = {}): UseSound {
       stopPlayer,
       seekToPlayer,
       setVolume,
-      setPlaybackSpeed,
       mmss,
       mmssss,
       dispose,

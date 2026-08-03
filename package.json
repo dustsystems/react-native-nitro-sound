@@ -7,13 +7,11 @@
   "types": "./lib/typescript/src/index.d.ts",
   "exports": {
     ".": {
-      "source": "./src/index.tsx",
       "types": "./lib/typescript/src/index.d.ts",
       "default": "./lib/module/index.js",
       "react-native": "./src/index.tsx",
       "browser": "./lib/module/index.web.js"
-    },
-    "./package.json": "./package.json"
+    }
   },
   "files": [
     "src",
@@ -25,6 +23,8 @@
     "nitro.json",
     "*.podspec",
     "react-native.config.js",
+    "tsconfig.build.json",
+    "scripts",
     "!ios/build",
     "!android/build",
     "!android/gradle",
@@ -37,20 +37,21 @@
     "!**/.*"
   ],
   "scripts": {
-    "example": "yarn workspace react-native-nitro-sound-example",
     "test": "jest",
     "typecheck": "tsc",
     "lint": "eslint \"**/*.{js,ts,tsx}\"",
     "lint:fix": "eslint \"**/*.{js,ts,tsx}\" --fix",
     "clean": "del-cli android/build example/android/build example/android/app/build example/ios/build lib",
-    "prepare": "husky install && npx tsx scripts/check-nitro-versions.ts && bob build && yarn nitrogen",
-    "nitrogen": "npx nitrogen",
-    "release": "release-it --only-version",
-    "web": "yarn workspace react-native-nitro-sound-example web",
-    "build:web": "yarn workspace react-native-nitro-sound-example build:web",
-    "android": "yarn workspace react-native-nitro-sound-example android",
-    "ios": "yarn workspace react-native-nitro-sound-example ios",
-    "start": "yarn workspace react-native-nitro-sound-example start",
+    "build": "mkdir -p lib/typescript && bob build && npm run nitrogen",
+    "prepare": "npm run build",
+    "fix-types": "mkdir -p lib/typescript && echo '{\"name\":\"react-native-nitro-sound-types\"}' > lib/typescript/package.json",
+    "nitrogen": "npx nitrogen && npm run fix-nitrogen",
+    "fix-nitrogen": "node scripts/fix-nitrogen-nsobject.js",
+    "android": "cd example && npm run android",
+    "ios": "cd example && npm run ios",
+    "start": "cd example && npm start",
+    "web": "cd example && npm run web",
+    "build:web": "cd example && npm run build:web",
     "logcat": "adb logcat -c && adb logcat --pid=$(adb shell pidof sound.example)"
   },
   "keywords": [
@@ -154,25 +155,9 @@
     "source": "src",
     "output": "lib",
     "targets": [
-      [
-        "custom",
-        {
-          "script": "nitrogen",
-          "clean": "nitrogen/"
-        }
-      ],
-      [
-        "module",
-        {
-          "esm": true
-        }
-      ],
-      [
-        "typescript",
-        {
-          "project": "tsconfig.build.json"
-        }
-      ]
+      ["custom", { "script": "nitrogen", "clean": "nitrogen/" }],
+      ["module", { "esm": true }],
+      ["typescript", { "project": "tsconfig.build.json" }]
     ]
   },
   "create-react-native-library": {
