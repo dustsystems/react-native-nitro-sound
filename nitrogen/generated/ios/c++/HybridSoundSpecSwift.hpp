@@ -446,6 +446,62 @@ namespace margelo::nitro::sound {
         std::rethrow_exception(__result.error());
       }
     }
+    inline bool liveTranscriptionSupported() override {
+      auto __result = _swiftPart.liveTranscriptionSupported();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<std::string>> ensureLiveTranscriptionAssets(const std::string& locale) override {
+      auto __result = _swiftPart.ensureLiveTranscriptionAssets(locale);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<void>> startLiveTranscription(const std::string& locale) override {
+      auto __result = _swiftPart.startLiveTranscription(locale);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<void>> stopLiveTranscription() override {
+      auto __result = _swiftPart.stopLiveTranscription();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline void setLiveTranscriptionResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) override {
+      auto __result = _swiftPart.setLiveTranscriptionResultCallback(callback);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void removeLiveTranscriptionResultCallback() override {
+      auto __result = _swiftPart.removeLiveTranscriptionResultCallback();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void setLiveTranscriptionErrorCallback(const std::function<void(const std::string& /* code */, const std::string& /* message */)>& callback) override {
+      auto __result = _swiftPart.setLiveTranscriptionErrorCallback(callback);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void removeLiveTranscriptionErrorCallback() override {
+      auto __result = _swiftPart.removeLiveTranscriptionErrorCallback();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
 
   private:
     NitroSound::HybridSoundSpec_cxx _swiftPart;

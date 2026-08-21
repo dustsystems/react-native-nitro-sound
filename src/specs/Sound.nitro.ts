@@ -253,4 +253,53 @@ export interface Sound
    */
   setCommandResultCallback(callback: (text: string, isFinal: boolean) => void): void;
   removeCommandResultCallback(): void;
+
+  // Live journal dictation via SpeechAnalyzer/SpeechTranscriber (iOS 26+).
+  //
+  // Unlike command recognition above, this does NOT run inside the overnight
+  // engine — LiveTranscriber (ios/LiveTranscriber.swift) owns its own small
+  // AVAudioEngine and joins the shared AVAudioSession as a second client
+  // beside the expo-audio recorder, exactly like expo-speech-recognition's
+  // dictation engine does today. It never re-modes or deactivates the session.
+  //
+  // The model is a per-locale system asset managed by iOS (AssetInventory);
+  // recognition is fully on-device with no duration cap — the long-form
+  // replacement for the SFSpeech path that degrades past ~1 minute.
+
+  /**
+   * Whether SpeechAnalyzer live transcription can run on this device
+   * (iOS 26+). Does NOT check whether the locale model is installed —
+   * call ensureLiveTranscriptionAssets() for that.
+   */
+  liveTranscriptionSupported(): boolean;
+
+  /**
+   * Check/provision the on-device model for the given locale.
+   * @returns 'ready' (model installed), 'downloading' (install kicked off in
+   *          the background — fall back to the legacy engine this session),
+   *          or 'unsupported' (OS < 26 or locale not supported).
+   */
+  ensureLiveTranscriptionAssets(locale: string): Promise<string>;
+
+  /**
+   * Start live mic transcription. Volatile (in-flight) results arrive with
+   * isFinal=false; finalized segments with isFinal=true. Rejects below iOS 26,
+   * when the model is missing, or if a session is already running.
+   */
+  startLiveTranscription(locale: string): Promise<void>;
+
+  /**
+   * Stop live transcription. Flushes the final result (delivered via the
+   * result callback with isFinal=true) before resolving. Safe to call when
+   * not running. Leaves the shared audio session untouched.
+   */
+  stopLiveTranscription(): Promise<void>;
+
+  /** Result callback: (segment text, isFinal). Set before startLiveTranscription. */
+  setLiveTranscriptionResultCallback(callback: (text: string, isFinal: boolean) => void): void;
+  removeLiveTranscriptionResultCallback(): void;
+
+  /** Error callback: (code, message). Codes: 'unsupported' | 'assets-missing' | 'audio-engine' | 'analyzer'. */
+  setLiveTranscriptionErrorCallback(callback: (code: string, message: string) => void): void;
+  removeLiveTranscriptionErrorCallback(): void;
 }

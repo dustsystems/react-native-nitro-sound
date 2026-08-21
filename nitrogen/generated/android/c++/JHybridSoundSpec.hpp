@@ -105,6 +105,14 @@ namespace margelo::nitro::sound {
     std::shared_ptr<Promise<void>> stopCommandRecognition() override;
     void setCommandResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) override;
     void removeCommandResultCallback() override;
+    bool liveTranscriptionSupported() override;
+    std::shared_ptr<Promise<std::string>> ensureLiveTranscriptionAssets(const std::string& locale) override;
+    std::shared_ptr<Promise<void>> startLiveTranscription(const std::string& locale) override;
+    std::shared_ptr<Promise<void>> stopLiveTranscription() override;
+    void setLiveTranscriptionResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) override;
+    void removeLiveTranscriptionResultCallback() override;
+    void setLiveTranscriptionErrorCallback(const std::function<void(const std::string& /* code */, const std::string& /* message */)>& callback) override;
+    void removeLiveTranscriptionErrorCallback() override;
 
   private:
     jni::global_ref<JHybridSoundSpec::JavaPart> _javaPart;

@@ -382,6 +382,28 @@ namespace margelo::nitro::sound::bridge::swift {
     return Func_void_std__string_bool_Wrapper(std::move(value));
   }
   
+  // pragma MARK: std::function<void(const std::string& /* code */, const std::string& /* message */)>
+  /**
+   * Specialized version of `std::function<void(const std::string&, const std::string&)>`.
+   */
+  using Func_void_std__string_std__string = std::function<void(const std::string& /* code */, const std::string& /* message */)>;
+  /**
+   * Wrapper class for a `std::function<void(const std::string& / * code * /, const std::string& / * message * /)>`, this can be used from Swift.
+   */
+  class Func_void_std__string_std__string_Wrapper final {
+  public:
+    explicit Func_void_std__string_std__string_Wrapper(std::function<void(const std::string& /* code */, const std::string& /* message */)>&& func): _function(std::make_unique<std::function<void(const std::string& /* code */, const std::string& /* message */)>>(std::move(func))) {}
+    inline void call(std::string code, std::string message) const noexcept {
+      _function->operator()(code, message);
+    }
+  private:
+    std::unique_ptr<std::function<void(const std::string& /* code */, const std::string& /* message */)>> _function;
+  } SWIFT_NONCOPYABLE;
+  Func_void_std__string_std__string create_Func_void_std__string_std__string(void* _Nonnull swiftClosureWrapper) noexcept;
+  inline Func_void_std__string_std__string_Wrapper wrap_Func_void_std__string_std__string(Func_void_std__string_std__string value) noexcept {
+    return Func_void_std__string_std__string_Wrapper(std::move(value));
+  }
+  
   // pragma MARK: std::shared_ptr<HybridSoundSpec>
   /**
    * Specialized version of `std::shared_ptr<HybridSoundSpec>`.
@@ -455,6 +477,15 @@ namespace margelo::nitro::sound::bridge::swift {
   }
   inline Result_std__string_ create_Result_std__string_(const std::exception_ptr& error) noexcept {
     return Result<std::string>::withError(error);
+  }
+  
+  // pragma MARK: Result<bool>
+  using Result_bool_ = Result<bool>;
+  inline Result_bool_ create_Result_bool_(bool value) noexcept {
+    return Result<bool>::withValue(std::move(value));
+  }
+  inline Result_bool_ create_Result_bool_(const std::exception_ptr& error) noexcept {
+    return Result<bool>::withError(error);
   }
 
 } // namespace margelo::nitro::sound::bridge::swift

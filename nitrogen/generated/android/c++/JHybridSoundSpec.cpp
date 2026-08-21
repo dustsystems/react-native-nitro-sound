@@ -31,6 +31,7 @@ namespace margelo::nitro::sound { struct PlaybackEndType; }
 #include "JFunc_void_std__string_std__string_bool_double.hpp"
 #include "JFunc_void.hpp"
 #include "JFunc_void_std__string_bool.hpp"
+#include "JFunc_void_std__string_std__string.hpp"
 
 namespace margelo::nitro::sound {
 
@@ -616,6 +617,73 @@ namespace margelo::nitro::sound {
   }
   void JHybridSoundSpec::removeCommandResultCallback() {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void()>("removeCommandResultCallback");
+    method(_javaPart);
+  }
+  bool JHybridSoundSpec::liveTranscriptionSupported() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("liveTranscriptionSupported");
+    auto __result = method(_javaPart);
+    return static_cast<bool>(__result);
+  }
+  std::shared_ptr<Promise<std::string>> JHybridSoundSpec::ensureLiveTranscriptionAssets(const std::string& locale) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JString> /* locale */)>("ensureLiveTranscriptionAssets");
+    auto __result = method(_javaPart, jni::make_jstring(locale));
+    return [&]() {
+      auto __promise = Promise<std::string>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& __boxedResult) {
+        auto __result = jni::static_ref_cast<jni::JString>(__boxedResult);
+        __promise->resolve(__result->toStdString());
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::startLiveTranscription(const std::string& locale) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JString> /* locale */)>("startLiveTranscription");
+    auto __result = method(_javaPart, jni::make_jstring(locale));
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::stopLiveTranscription() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("stopLiveTranscription");
+    auto __result = method(_javaPart);
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  void JHybridSoundSpec::setLiveTranscriptionResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string_bool::javaobject> /* callback */)>("setLiveTranscriptionResultCallback_cxx");
+    method(_javaPart, JFunc_void_std__string_bool_cxx::fromCpp(callback));
+  }
+  void JHybridSoundSpec::removeLiveTranscriptionResultCallback() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void()>("removeLiveTranscriptionResultCallback");
+    method(_javaPart);
+  }
+  void JHybridSoundSpec::setLiveTranscriptionErrorCallback(const std::function<void(const std::string& /* code */, const std::string& /* message */)>& callback) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string_std__string::javaobject> /* callback */)>("setLiveTranscriptionErrorCallback_cxx");
+    method(_javaPart, JFunc_void_std__string_std__string_cxx::fromCpp(callback));
+  }
+  void JHybridSoundSpec::removeLiveTranscriptionErrorCallback() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void()>("removeLiveTranscriptionErrorCallback");
     method(_javaPart);
   }
 

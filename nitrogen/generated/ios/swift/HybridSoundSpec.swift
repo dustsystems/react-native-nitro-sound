@@ -64,6 +64,14 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func stopCommandRecognition() throws -> Promise<Void>
   func setCommandResultCallback(callback: @escaping (_ text: String, _ isFinal: Bool) -> Void) throws -> Void
   func removeCommandResultCallback() throws -> Void
+  func liveTranscriptionSupported() throws -> Bool
+  func ensureLiveTranscriptionAssets(locale: String) throws -> Promise<String>
+  func startLiveTranscription(locale: String) throws -> Promise<Void>
+  func stopLiveTranscription() throws -> Promise<Void>
+  func setLiveTranscriptionResultCallback(callback: @escaping (_ text: String, _ isFinal: Bool) -> Void) throws -> Void
+  func removeLiveTranscriptionResultCallback() throws -> Void
+  func setLiveTranscriptionErrorCallback(callback: @escaping (_ code: String, _ message: String) -> Void) throws -> Void
+  func removeLiveTranscriptionErrorCallback() throws -> Void
 }
 
 public extension HybridSoundSpec_protocol {

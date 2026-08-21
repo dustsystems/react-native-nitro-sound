@@ -150,6 +150,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var commandRestartWorkItem: DispatchWorkItem?
     private let commandRestartBackoff: TimeInterval = 0.25  // avoid tight error→restart storms
 
+    // MARK: - Live Journal Dictation (SpeechAnalyzer, iOS 26+)
+    // Implementation lives in LiveTranscriber.swift; it runs its OWN small
+    // AVAudioEngine beside the expo-audio recorder and never touches this
+    // class's overnight engine. Stored type-erased because the class itself
+    // is @available(iOS 26).
+    private var liveTranscriberStorage: Any?
+    private var liveTranscriptionResultCallback: ((String, Bool) -> Void)?
+    private var liveTranscriptionErrorCallback: ((String, String) -> Void)?
+
     // File writing
     private var currentSegmentFile: AVAudioFile?
     private var currentSegmentIsManual: Bool = false
@@ -2956,6 +2965,93 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
         commandRestartWorkItem = work
         commandControlQueue.asyncAfter(deadline: .now() + commandRestartBackoff, execute: work)
+    }
+
+    // MARK: - Live Journal Dictation (SpeechAnalyzer, iOS 26+)
+    // Thin Nitro entry points — nitrogen requires spec methods on this class;
+    // all real logic is in LiveTranscriber.swift.
+
+    public func liveTranscriptionSupported() throws -> Bool {
+        if #available(iOS 26.0, *) { return true }
+        return false
+    }
+
+    public func ensureLiveTranscriptionAssets(locale: String) throws -> Promise<String> {
+        let promise = Promise<String>()
+        if #available(iOS 26.0, *) {
+            Task {
+                let status = await LiveTranscriber.ensureAssets(localeIdentifier: locale)
+                promise.resolve(withResult: status)
+            }
+        } else {
+            promise.resolve(withResult: "unsupported")
+        }
+        return promise
+    }
+
+    public func startLiveTranscription(locale: String) throws -> Promise<Void> {
+        let promise = Promise<Void>()
+        if #available(iOS 26.0, *) {
+            Task {
+                do {
+                    try await self.liveTranscriberInstance().start(localeIdentifier: locale)
+                    promise.resolve(withResult: ())
+                } catch {
+                    promise.reject(withError: RuntimeError.error(withMessage: error.localizedDescription))
+                }
+            }
+        } else {
+            promise.reject(withError: RuntimeError.error(withMessage: "SpeechAnalyzer live transcription requires iOS 26"))
+        }
+        return promise
+    }
+
+    public func stopLiveTranscription() throws -> Promise<Void> {
+        let promise = Promise<Void>()
+        if #available(iOS 26.0, *) {
+            Task {
+                if let transcriber = self.liveTranscriberStorage as? LiveTranscriber {
+                    await transcriber.stop()
+                }
+                promise.resolve(withResult: ())
+            }
+        } else {
+            promise.resolve(withResult: ())
+        }
+        return promise
+    }
+
+    public func setLiveTranscriptionResultCallback(callback: @escaping (String, Bool) -> Void) throws {
+        liveTranscriptionResultCallback = callback
+    }
+
+    public func removeLiveTranscriptionResultCallback() throws {
+        liveTranscriptionResultCallback = nil
+    }
+
+    public func setLiveTranscriptionErrorCallback(callback: @escaping (String, String) -> Void) throws {
+        liveTranscriptionErrorCallback = callback
+    }
+
+    public func removeLiveTranscriptionErrorCallback() throws {
+        liveTranscriptionErrorCallback = nil
+    }
+
+    @available(iOS 26.0, *)
+    private func liveTranscriberInstance() -> LiveTranscriber {
+        if let existing = liveTranscriberStorage as? LiveTranscriber { return existing }
+        let created = LiveTranscriber()
+        created.onResult = { [weak self] text, isFinal in
+            self?.liveTranscriptionResultCallback?(text, isFinal)
+        }
+        created.onError = { [weak self] code, message in
+            self?.liveTranscriptionErrorCallback?(code, message)
+        }
+        created.log = { [weak self] message in
+            self?.bridgedLog(message)
+        }
+        liveTranscriberStorage = created
+        return created
     }
 
     // MARK: - Crossfade Methods

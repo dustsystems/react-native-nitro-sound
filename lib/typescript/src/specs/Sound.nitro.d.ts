@@ -185,5 +185,36 @@ export interface Sound extends HybridObject<{
      */
     setCommandResultCallback(callback: (text: string, isFinal: boolean) => void): void;
     removeCommandResultCallback(): void;
+    /**
+     * Whether SpeechAnalyzer live transcription can run on this device
+     * (iOS 26+). Does NOT check whether the locale model is installed —
+     * call ensureLiveTranscriptionAssets() for that.
+     */
+    liveTranscriptionSupported(): boolean;
+    /**
+     * Check/provision the on-device model for the given locale.
+     * @returns 'ready' (model installed), 'downloading' (install kicked off in
+     *          the background — fall back to the legacy engine this session),
+     *          or 'unsupported' (OS < 26 or locale not supported).
+     */
+    ensureLiveTranscriptionAssets(locale: string): Promise<string>;
+    /**
+     * Start live mic transcription. Volatile (in-flight) results arrive with
+     * isFinal=false; finalized segments with isFinal=true. Rejects below iOS 26,
+     * when the model is missing, or if a session is already running.
+     */
+    startLiveTranscription(locale: string): Promise<void>;
+    /**
+     * Stop live transcription. Flushes the final result (delivered via the
+     * result callback with isFinal=true) before resolving. Safe to call when
+     * not running. Leaves the shared audio session untouched.
+     */
+    stopLiveTranscription(): Promise<void>;
+    /** Result callback: (segment text, isFinal). Set before startLiveTranscription. */
+    setLiveTranscriptionResultCallback(callback: (text: string, isFinal: boolean) => void): void;
+    removeLiveTranscriptionResultCallback(): void;
+    /** Error callback: (code, message). Codes: 'unsupported' | 'assets-missing' | 'audio-engine' | 'analyzer'. */
+    setLiveTranscriptionErrorCallback(callback: (code: string, message: string) => void): void;
+    removeLiveTranscriptionErrorCallback(): void;
 }
 //# sourceMappingURL=Sound.nitro.d.ts.map

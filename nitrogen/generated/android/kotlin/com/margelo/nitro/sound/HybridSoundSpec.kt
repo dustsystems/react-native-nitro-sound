@@ -277,6 +277,48 @@ abstract class HybridSoundSpec: HybridObject() {
   @DoNotStrip
   @Keep
   abstract fun removeCommandResultCallback(): Unit
+  
+  @DoNotStrip
+  @Keep
+  abstract fun liveTranscriptionSupported(): Boolean
+  
+  @DoNotStrip
+  @Keep
+  abstract fun ensureLiveTranscriptionAssets(locale: String): Promise<String>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun startLiveTranscription(locale: String): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun stopLiveTranscription(): Promise<Unit>
+  
+  abstract fun setLiveTranscriptionResultCallback(callback: (text: String, isFinal: Boolean) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setLiveTranscriptionResultCallback_cxx(callback: Func_void_std__string_bool): Unit {
+    val __result = setLiveTranscriptionResultCallback(callback)
+    return __result
+  }
+  
+  @DoNotStrip
+  @Keep
+  abstract fun removeLiveTranscriptionResultCallback(): Unit
+  
+  abstract fun setLiveTranscriptionErrorCallback(callback: (code: String, message: String) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setLiveTranscriptionErrorCallback_cxx(callback: Func_void_std__string_std__string): Unit {
+    val __result = setLiveTranscriptionErrorCallback(callback)
+    return __result
+  }
+  
+  @DoNotStrip
+  @Keep
+  abstract fun removeLiveTranscriptionErrorCallback(): Unit
 
   // Default implementation of `HybridObject.toString()`
   override fun toString(): String {

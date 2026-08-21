@@ -65,6 +65,14 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("stopCommandRecognition", &HybridSoundSpec::stopCommandRecognition);
       prototype.registerHybridMethod("setCommandResultCallback", &HybridSoundSpec::setCommandResultCallback);
       prototype.registerHybridMethod("removeCommandResultCallback", &HybridSoundSpec::removeCommandResultCallback);
+      prototype.registerHybridMethod("liveTranscriptionSupported", &HybridSoundSpec::liveTranscriptionSupported);
+      prototype.registerHybridMethod("ensureLiveTranscriptionAssets", &HybridSoundSpec::ensureLiveTranscriptionAssets);
+      prototype.registerHybridMethod("startLiveTranscription", &HybridSoundSpec::startLiveTranscription);
+      prototype.registerHybridMethod("stopLiveTranscription", &HybridSoundSpec::stopLiveTranscription);
+      prototype.registerHybridMethod("setLiveTranscriptionResultCallback", &HybridSoundSpec::setLiveTranscriptionResultCallback);
+      prototype.registerHybridMethod("removeLiveTranscriptionResultCallback", &HybridSoundSpec::removeLiveTranscriptionResultCallback);
+      prototype.registerHybridMethod("setLiveTranscriptionErrorCallback", &HybridSoundSpec::setLiveTranscriptionErrorCallback);
+      prototype.registerHybridMethod("removeLiveTranscriptionErrorCallback", &HybridSoundSpec::removeLiveTranscriptionErrorCallback);
     });
   }
 
