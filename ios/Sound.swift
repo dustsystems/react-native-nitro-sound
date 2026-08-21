@@ -2992,9 +2992,21 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     public func startLiveTranscription(locale: String) throws -> Promise<Void> {
         let promise = Promise<Void>()
         if #available(iOS 26.0, *) {
+            // Capture THIS session's JS callbacks at start time. The stored
+            // properties are a mutable slot the next session overwrites; a
+            // stopping session's native drain must keep routing to the
+            // closures registered when IT started, so its late final hits the
+            // old session's generation guard instead of the new session's
+            // transcript (PR #991 review C2).
+            let onResult = self.liveTranscriptionResultCallback
+            let onError = self.liveTranscriptionErrorCallback
             Task {
                 do {
-                    try await self.liveTranscriberInstance().start(localeIdentifier: locale)
+                    try await self.liveTranscriberInstance().start(
+                        localeIdentifier: locale,
+                        onResult: { text, isFinal in onResult?(text, isFinal) },
+                        onError: { code, message in onError?(code, message) }
+                    )
                     promise.resolve(withResult: ())
                 } catch {
                     promise.reject(withError: RuntimeError.error(withMessage: error.localizedDescription))
@@ -3041,12 +3053,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private func liveTranscriberInstance() -> LiveTranscriber {
         if let existing = liveTranscriberStorage as? LiveTranscriber { return existing }
         let created = LiveTranscriber()
-        created.onResult = { [weak self] text, isFinal in
-            self?.liveTranscriptionResultCallback?(text, isFinal)
-        }
-        created.onError = { [weak self] code, message in
-            self?.liveTranscriptionErrorCallback?(code, message)
-        }
+        // Result/error callbacks are passed per session in startLiveTranscription
+        // (see the C2 note there); only the session-agnostic log bridge is shared.
         created.log = { [weak self] message in
             self?.bridgedLog(message)
         }
