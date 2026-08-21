@@ -23,30 +23,27 @@ import os
 ///   long-form replacement for the SFSpeech session that degrades past
 ///   ~1 minute (no server mode exists in this API at all).
 ///
-/// Error contract (PR #991 round-1 review):
+/// Error contract (PR #991 review, rounds 1-2):
 /// - START-TIME failures (model missing, engine won't start) THROW only.
-///   The JS engine picker owns start failures and falls back to legacy;
-///   firing onError as well double-reports and shows the user a false
-///   error while legacy dictation is working. (review I1)
+///   The JS engine picker owns start failures and falls back to legacy.
 /// - MID-SESSION failures (results stream dies, audio interruption) fire
 ///   the session's onError AND tear the pipeline down — a dead session must
 ///   never keep the mic hot behind a UI that says dictation stopped.
-///   (review C1 / I4)
+///
+/// Session identity (round-2 NB1/NB2): every session gets a monotonic id.
+/// All DEFERRED teardown (the post-drain teardown queued by stop(), the
+/// failure paths, the commit of an in-flight startup) is gated on that id —
+/// a stale session's late teardown must never wipe the session that
+/// replaced it, and an abandoned startup must dismantle ITS OWN pipeline
+/// rather than committing it over the new session's.
 @available(iOS 26.0, macOS 26.0, *)
 final class LiveTranscriber: @unchecked Sendable {
 
     private static let oslog = os.Logger(subsystem: "systems.dust.nitrosound", category: "LiveTranscriber")
 
-    // MARK: - Per-session pipeline state
-    //
-    // All of this is torn down in teardown(), which runs on controlQueue.
-    // The result/error callbacks are CAPTURED PER SESSION at start() time
-    // (review C2: a shared mutable callback slot let a stopping session's
-    // drain deliver its final into the NEXT session's callbacks, splicing
-    // dream A's tail into dream B's transcript — per-session capture routes
-    // late emissions to the stale session's JS closure, whose generation
-    // guard drops them).
+    // MARK: - Session identity & pipeline state (all mutated on controlQueue)
 
+    private var sessionID: UInt64 = 0
     private var audioEngine: AVAudioEngine?
     private var analyzer: SpeechAnalyzer?
     private var transcriber: SpeechTranscriber?
@@ -54,23 +51,20 @@ final class LiveTranscriber: @unchecked Sendable {
     private var resultsTask: Task<Void, Never>?
     private var interruptionObserver: NSObjectProtocol?
     private var configChangeObserver: NSObjectProtocol?
-    private var sessionOnResult: ((String, Bool) -> Void)?
-    private var sessionOnError: ((String, String) -> Void)?
     private(set) var isActive = false
 
-    /// Serializes start/stop/teardown state transitions. JS also serializes
-    /// calls, but rapid stop→start (re-record) and mid-session failures can
-    /// interleave native completion with the next session's startup.
+    /// Serializes session state transitions. JS also serializes calls, but
+    /// rapid stop→start (re-record) and mid-session failures interleave
+    /// native completion with the next session's startup.
     private let controlQueue = DispatchQueue(label: "com.hypnos.liveTranscriber")
 
-    /// Shared log bridge into the app's debug logging (safe to share across
-    /// sessions — it carries no session identity).
+    /// Shared log bridge into the app's debug logging (session-agnostic).
     var log: ((String) -> Void)?
 
     // MARK: - Asset management
 
-    /// Guards against stacking a new system download request on every
-    /// start attempt while one is already in flight. (review)
+    /// Guards against stacking a new system download request on every start
+    /// attempt while one is already in flight.
     private static var downloadInFlight = false
     private static let downloadFlagQueue = DispatchQueue(label: "com.hypnos.liveTranscriber.assets")
 
@@ -109,9 +103,8 @@ final class LiveTranscriber: @unchecked Sendable {
                         try await request.downloadAndInstall()
                         oslog.info("speech model install completed for \(localeIdentifier, privacy: .public)")
                     } catch {
-                        // Instance log bridge is unavailable in a static
-                        // context — os_log so field failures are visible in
-                        // sysdiagnose instead of vanishing. (review I5)
+                        // os_log so field failures reach sysdiagnose — the
+                        // instance log bridge is unavailable here.
                         oslog.error("speech model install FAILED for \(localeIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)")
                     }
                     downloadFlagQueue.sync { downloadInFlight = false }
@@ -119,13 +112,11 @@ final class LiveTranscriber: @unchecked Sendable {
                 return "downloading"
             }
             downloadFlagQueue.sync { downloadInFlight = false }
-            // No request needed: the system considers the assets present.
             return "ready"
         } catch {
             downloadFlagQueue.sync { downloadInFlight = false }
             // A hard failure creating the request is NOT progress — reporting
-            // it as 'downloading' made stuck devices indistinguishable from
-            // healthy ones. (review I5)
+            // it as 'downloading' made stuck devices look healthy.
             oslog.error("assetInstallationRequest failed for \(localeIdentifier, privacy: .public): \(error.localizedDescription, privacy: .public)")
             return "download-failed"
         }
@@ -133,88 +124,99 @@ final class LiveTranscriber: @unchecked Sendable {
 
     // MARK: - Lifecycle
 
-    /// Start a session with per-session callbacks. If a previous session is
-    /// still draining (rapid stop→start — review I2/CR4), it is torn down
-    /// first rather than rejecting: by the time JS calls start, the JS layer
-    /// has already decided this session owns the mic, and rejecting here
-    /// silently pinned users to the legacy engine for the whole next take.
+    /// Start a session with per-session callbacks (shared-slot callbacks let
+    /// a stopping session's drain splice its final into the next session's
+    /// transcript — round-1 C2). Any remnants of a previous session are torn
+    /// down first: by the time JS calls start, the JS layer has already
+    /// decided this session owns the mic.
     func start(
         localeIdentifier: String,
         onResult: @escaping (String, Bool) -> Void,
         onError: @escaping (String, String) -> Void
     ) async throws {
-        try await withCheckedThrowingContinuation { (cont: CheckedContinuation<Void, Error>) in
-            controlQueue.async { [weak self] in
-                guard let self else {
-                    cont.resume(throwing: RuntimeErrorShim.message("LiveTranscriber deallocated"))
-                    return
+        // Claim the session slot synchronously on the control queue.
+        let sid: UInt64 = await withCheckedContinuation { cont in
+            controlQueue.async { [self] in
+                if isActive || audioEngine != nil {
+                    log?("⚠️ [LT] previous session still present at start — tearing down")
                 }
-                if self.isActive {
-                    self.log?("⚠️ [LT] stale session still draining at start — force-tearing down")
-                    self.teardown()
-                }
-                self.isActive = true
-                self.sessionOnResult = onResult
-                self.sessionOnError = onError
-                Task {
-                    do {
-                        try await self.startPipeline(localeIdentifier: localeIdentifier)
-                        cont.resume(returning: ())
-                    } catch {
-                        self.controlQueue.async { self.teardown() }
-                        cont.resume(throwing: error)
-                    }
-                }
+                teardown() // idempotent; also invalidates any queued stale teardown via the id bump below
+                sessionID &+= 1
+                isActive = true
+                cont.resume(returning: sessionID)
             }
+        }
+
+        do {
+            try await startPipeline(
+                sid: sid,
+                localeIdentifier: localeIdentifier,
+                onResult: onResult,
+                onError: onError
+            )
+        } catch {
+            controlQueue.async { [self] in
+                if sessionID == sid { teardown() }
+            }
+            throw error
         }
     }
 
     func stop() async {
-        // Snapshot AND flip isActive under the control queue — isActive going
-        // false here (not in the eventual teardown) is what lets an immediate
-        // next start() proceed instead of colliding with the drain. (review I2)
-        let (continuation, activeAnalyzer): (AsyncStream<AnalyzerInput>.Continuation?, SpeechAnalyzer?) =
+        // Snapshot AND release the slot under the control queue — isActive
+        // going false here lets an immediate next start() proceed; the id
+        // gate below keeps our deferred teardown from touching it. (NB1)
+        let snapshot: (sid: UInt64, continuation: AsyncStream<AnalyzerInput>.Continuation?, analyzer: SpeechAnalyzer?, engine: AVAudioEngine?)? =
             await withCheckedContinuation { cont in
-                controlQueue.async { [weak self] in
-                    guard let self, self.isActive else {
-                        cont.resume(returning: (nil, nil))
+                controlQueue.async { [self] in
+                    guard isActive else {
+                        cont.resume(returning: nil)
                         return
                     }
-                    self.isActive = false
-                    cont.resume(returning: (self.inputContinuation, self.analyzer))
+                    isActive = false
+                    cont.resume(returning: (sessionID, inputContinuation, analyzer, audioEngine))
                 }
             }
-        guard let activeAnalyzer else {
-            // Either never active, or start() was still mid-pipeline (the
-            // continuation/analyzer not yet assigned). Tear down whatever
-            // exists so nothing is stranded holding the mic. (review CR6)
-            controlQueue.async { [weak self] in self?.teardown() }
-            return
-        }
+        guard let snapshot else { return }
 
         // Stop feeding audio first so the analyzer can drain and finalize.
-        stopEngineOnly()
-        continuation?.finish()
-        do {
-            // Delivers the last finalized result through transcriber.results
-            // (our results task forwards it with isFinal=true) before returning.
-            try await activeAnalyzer.finalizeAndFinishThroughEndOfInput()
-        } catch {
-            log?("⚠️ [LT] finalize failed: \(error.localizedDescription)")
+        Self.stopEngine(snapshot.engine)
+        snapshot.continuation?.finish()
+        if let analyzer = snapshot.analyzer {
+            do {
+                // Delivers the last finalized result through transcriber.results
+                // (the results task forwards it with isFinal=true) before returning.
+                try await analyzer.finalizeAndFinishThroughEndOfInput()
+            } catch {
+                log?("⚠️ [LT] finalize failed: \(error.localizedDescription)")
+            }
         }
-        controlQueue.async { [weak self] in self?.teardown() }
+        controlQueue.async { [self] in
+            // Id-gated: if a new session claimed the instance during our
+            // drain, this teardown must not wipe it. (round-2 NB1)
+            if sessionID == snapshot.sid { teardown() }
+        }
     }
 
     // MARK: - Pipeline
 
-    private func startPipeline(localeIdentifier: String) async throws {
+    /// Builds the entire pipeline in LOCALS and commits it to instance state
+    /// only if this session still owns the slot — an abandoned startup
+    /// dismantles its own objects instead of orphaning a running engine or
+    /// overwriting the successor's. (round-2 NB2)
+    private func startPipeline(
+        sid: UInt64,
+        localeIdentifier: String,
+        onResult: @escaping (String, Bool) -> Void,
+        onError: @escaping (String, String) -> Void
+    ) async throws {
         let locale = Locale(identifier: localeIdentifier)
 
         let installed = await SpeechTranscriber.installedLocales
         guard installed.contains(where: { $0.identifier(.bcp47) == locale.identifier(.bcp47) }) else {
-            // Throw only — start-time failures are the picker's to handle. (review I1)
             throw RuntimeErrorShim.message("Speech model for \(localeIdentifier) is not installed")
         }
+        guard await isCurrent(sid) else { throw RuntimeErrorShim.message("Session superseded during startup") }
 
         // .volatileResults gives the live in-flight text between finalized
         // segments — the direct analog of SFSpeech partials, minus the decay.
@@ -224,62 +226,105 @@ final class LiveTranscriber: @unchecked Sendable {
             reportingOptions: [.volatileResults],
             attributeOptions: []
         )
-        self.transcriber = transcriber
-
         let analyzer = SpeechAnalyzer(modules: [transcriber])
-        self.analyzer = analyzer
 
         guard let analyzerFormat = await SpeechAnalyzer.bestAvailableAudioFormat(compatibleWith: [transcriber]) else {
             throw RuntimeErrorShim.message("No compatible audio format for SpeechTranscriber")
         }
+        guard await isCurrent(sid) else { throw RuntimeErrorShim.message("Session superseded during startup") }
 
-        // Forward results BEFORE audio starts so nothing is dropped.
-        resultsTask = Task { [weak self] in
+        // Forward results BEFORE audio starts so nothing is dropped. The
+        // callbacks are locals — a stale session's late emissions route to
+        // ITS closures, whose JS generation guard drops them.
+        let resultsTask = Task { [weak self] in
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
                     guard !text.isEmpty else { continue }
-                    self?.sessionOnResult?(text, result.isFinal)
+                    onResult(text, result.isFinal)
                 }
             } catch {
-                // A dead results stream means the session is unrecoverable.
-                // Surface it AND tear down — logging alone left the engine
-                // running and the mic indicator lit behind a UI that said
-                // dictation had stopped. (review C1) The stale-session case
-                // (cancel during teardown) is filtered by isActive.
-                guard let self else { return }
-                self.controlQueue.async {
-                    guard self.isActive else { return }
-                    self.log?("⚠️ [LT] results stream error: \(error.localizedDescription)")
-                    self.sessionOnError?("analyzer", error.localizedDescription)
-                    self.teardown()
-                }
+                // A dead results stream means the session is unrecoverable:
+                // surface AND tear down (mic must not stay hot behind a UI
+                // that says dictation stopped — round-1 C1). Id-gated so a
+                // cancel-during-teardown can't fire a spurious error.
+                self?.failSession(sid: sid, code: "analyzer", message: error.localizedDescription, onError: onError)
             }
         }
 
         // Bounded as a safety valve: if the analyzer ever stalls, dropping
-        // the newest audio bounds memory; the C1 teardown path is what
+        // the newest audio bounds memory; the terminal-error path is what
         // actually ends a dead session. ~512 buffers ≈ 45s of tap audio.
         let (inputSequence, continuation) = AsyncStream<AnalyzerInput>.makeStream(
             bufferingPolicy: .bufferingNewest(512)
         )
-        self.inputContinuation = continuation
 
-        try configureAudioSessionAsSecondClient()
-        registerSessionObservers()
-        try startAudioEngine(feeding: continuation, analyzerFormat: analyzerFormat)
+        var engine: AVAudioEngine?
+        var observers: [NSObjectProtocol] = []
+        // Dismantle everything built so far on any failure below.
+        func abandonLocals() {
+            resultsTask.cancel()
+            continuation.finish()
+            Self.stopEngine(engine)
+            observers.forEach { NotificationCenter.default.removeObserver($0) }
+        }
 
-        try await analyzer.start(inputSequence: inputSequence)
+        do {
+            try configureAudioSessionAsSecondClient()
+            let builtEngine = try Self.buildAudioEngine(
+                feeding: continuation,
+                analyzerFormat: analyzerFormat,
+                log: log
+            )
+            engine = builtEngine
+            observers = registerSessionObservers(sid: sid, engine: builtEngine, onError: onError)
+            try await analyzer.start(inputSequence: inputSequence)
+        } catch {
+            abandonLocals()
+            throw error
+        }
+
+        // COMMIT — only if this session still owns the slot.
+        let committed: Bool = await withCheckedContinuation { cont in
+            controlQueue.async { [self] in
+                guard sessionID == sid, isActive else {
+                    cont.resume(returning: false)
+                    return
+                }
+                self.transcriber = transcriber
+                self.analyzer = analyzer
+                self.audioEngine = engine
+                self.inputContinuation = continuation
+                self.resultsTask = resultsTask
+                self.interruptionObserver = observers.count > 0 ? observers[0] : nil
+                self.configChangeObserver = observers.count > 1 ? observers[1] : nil
+                cont.resume(returning: true)
+            }
+        }
+        guard committed else {
+            abandonLocals()
+            Task { try? await analyzer.finalizeAndFinishThroughEndOfInput() }
+            throw RuntimeErrorShim.message("Session superseded during startup")
+        }
+
         log?("🎤🟢 [LT] SpeechAnalyzer live transcription started (\(localeIdentifier))")
+    }
+
+    private func isCurrent(_ sid: UInt64) async -> Bool {
+        await withCheckedContinuation { cont in
+            controlQueue.async { [self] in
+                cont.resume(returning: sessionID == sid && isActive)
+            }
+        }
     }
 
     /// Join the shared AVAudioSession WITHOUT fighting the expo-audio recorder.
     ///
     /// If the session is already .playAndRecord (the recorder started first —
     /// the normal journal flow), touch nothing. Only when running standalone
-    /// (no recorder, e.g. a future dictation-only surface) do we set the
-    /// category ourselves — with the exact option set the journal flow pins
-    /// (SpeechRecognitionService.ts buildConfig / Sound.swift session config).
+    /// (no recorder, e.g. the typed-note dictation surface) do we set the
+    /// category ourselves — with the option set the legacy dictation engine
+    /// uses today (SpeechRecognitionService.ts buildConfig), for parity.
     /// Never mode .measurement, never deactivate.
     private func configureAudioSessionAsSecondClient() throws {
         #if os(iOS)
@@ -298,50 +343,59 @@ final class LiveTranscriber: @unchecked Sendable {
     }
 
     /// A phone call, Siri, or an engine configuration change kills the mic
-    /// feed with no error from any API we're already listening to. Without
-    /// these observers the session froze silently: text stopped, isActive
-    /// stayed true, JS stayed "listening". (review I4/CR5) Route both through
-    /// the mid-session error path, which tears down and tells JS.
-    private func registerSessionObservers() {
+    /// feed with no error from any API we're already listening to; without
+    /// these the session froze silently. Both route through the terminal
+    /// mid-session error path. Returns the observers for commit.
+    private func registerSessionObservers(
+        sid: UInt64,
+        engine: AVAudioEngine,
+        onError: @escaping (String, String) -> Void
+    ) -> [NSObjectProtocol] {
+        var observers: [NSObjectProtocol] = []
         #if os(iOS)
-        interruptionObserver = NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: AVAudioSession.interruptionNotification,
             object: AVAudioSession.sharedInstance(),
             queue: nil
         ) { [weak self] notification in
             let typeValue = notification.userInfo?[AVAudioSessionInterruptionTypeKey] as? UInt
             guard typeValue == AVAudioSession.InterruptionType.began.rawValue else { return }
-            self?.failSession(code: "interrupted", message: "Audio session interrupted")
-        }
+            self?.failSession(sid: sid, code: "interrupted", message: "Audio session interrupted", onError: onError)
+        })
         #endif
-        configChangeObserver = NotificationCenter.default.addObserver(
+        observers.append(NotificationCenter.default.addObserver(
             forName: .AVAudioEngineConfigurationChange,
             object: nil,
             queue: nil
-        ) { [weak self] notification in
-            guard let self, let engine = self.audioEngine,
-                  (notification.object as? AVAudioEngine) === engine else { return }
-            self.failSession(code: "audio-route-changed", message: "Audio configuration changed mid-session")
+        ) { [weak self, weak engine] notification in
+            guard let engine, (notification.object as? AVAudioEngine) === engine else { return }
+            self?.failSession(sid: sid, code: "audio-route-changed", message: "Audio configuration changed mid-session", onError: onError)
+        })
+        return observers
+    }
+
+    /// Mid-session terminal failure: notify the session's JS closure and tear
+    /// down — id-gated so a stale session's failure can't kill its successor.
+    private func failSession(
+        sid: UInt64,
+        code: String,
+        message: String,
+        onError: @escaping (String, String) -> Void
+    ) {
+        controlQueue.async { [self] in
+            guard sessionID == sid, isActive else { return }
+            log?("⚠️ [LT] session failed: \(code) — \(message)")
+            onError(code, message)
+            teardown()
         }
     }
 
-    /// Mid-session terminal failure: notify the session's JS closure, tear down.
-    private func failSession(code: String, message: String) {
-        controlQueue.async { [weak self] in
-            guard let self, self.isActive else { return }
-            self.log?("⚠️ [LT] session failed: \(code) — \(message)")
-            self.sessionOnError?(code, message)
-            self.teardown()
-        }
-    }
-
-    private func startAudioEngine(
+    private static func buildAudioEngine(
         feeding continuation: AsyncStream<AnalyzerInput>.Continuation,
-        analyzerFormat: AVAudioFormat
-    ) throws {
+        analyzerFormat: AVAudioFormat,
+        log: ((String) -> Void)?
+    ) throws -> AVAudioEngine {
         let engine = AVAudioEngine()
-        self.audioEngine = engine
-
         let inputNode = engine.inputNode
         let hardwareFormat = inputNode.outputFormat(forBus: 0)
         guard hardwareFormat.sampleRate > 0, hardwareFormat.channelCount > 0 else {
@@ -349,10 +403,9 @@ final class LiveTranscriber: @unchecked Sendable {
         }
 
         let needsConversion = hardwareFormat != analyzerFormat
-        // Converter is a LOCAL captured by the tap closure — the tap runs on
-        // the render thread and must never read self's mutable state, which
-        // teardown() nils on controlQueue while a callback can still be in
-        // flight. (review CR6)
+        // The tap runs on the render thread and must only touch its own
+        // captured locals — never instance state that teardown() mutates on
+        // controlQueue while a callback is still in flight.
         var localConverter: AVAudioConverter?
         if needsConversion {
             guard let converter = AVAudioConverter(from: hardwareFormat, to: analyzerFormat) else {
@@ -360,7 +413,6 @@ final class LiveTranscriber: @unchecked Sendable {
             }
             localConverter = converter
         }
-        let logBridge = self.log
 
         inputNode.installTap(onBus: 0, bufferSize: 4096, format: hardwareFormat) { buffer, _ in
             if let converter = localConverter {
@@ -383,15 +435,14 @@ final class LiveTranscriber: @unchecked Sendable {
                 if status == .haveData || (status == .inputRanDry && converted.frameLength > 0) {
                     continuation.yield(AnalyzerInput(buffer: converted))
                 } else if let conversionError {
-                    logBridge?("⚠️ [LT] convert error: \(conversionError.localizedDescription)")
+                    log?("⚠️ [LT] convert error: \(conversionError.localizedDescription)")
                 }
             } else {
                 // Even without conversion, COPY: the tap buffer's storage is
                 // owned and recycled by AVAudioEngine once this callback
                 // returns, while the stream hands it to the analyzer
                 // asynchronously — yielding it directly is read-after-recycle.
-                // (review CR7)
-                guard let copy = Self.copyBuffer(buffer) else { return }
+                guard let copy = copyBuffer(buffer) else { return }
                 continuation.yield(AnalyzerInput(buffer: copy))
             }
         }
@@ -403,9 +454,12 @@ final class LiveTranscriber: @unchecked Sendable {
             inputNode.removeTap(onBus: 0)
             throw error
         }
+        return engine
     }
 
     private static func copyBuffer(_ source: AVAudioPCMBuffer) -> AVAudioPCMBuffer? {
+        // frameCapacity: 0 traps in the AVAudioPCMBuffer initializer.
+        guard source.frameLength > 0 else { return nil }
         guard let copy = AVAudioPCMBuffer(pcmFormat: source.format, frameCapacity: source.frameLength) else {
             return nil
         }
@@ -424,18 +478,17 @@ final class LiveTranscriber: @unchecked Sendable {
 
     // MARK: - Teardown
 
-    /// Stop the mic feed only — used on stop() so the analyzer can still
-    /// drain buffered audio and emit the final result.
-    private func stopEngineOnly() {
-        guard let engine = audioEngine else { return }
+    private static func stopEngine(_ engine: AVAudioEngine?) {
+        guard let engine else { return }
         engine.inputNode.removeTap(onBus: 0)
         if engine.isRunning { engine.stop() }
     }
 
-    /// Full reset. Runs on controlQueue. Idempotent. Deliberately does NOT
-    /// touch the shared AVAudioSession (the recorder/JS layer owns restore).
+    /// Full reset of instance state. Runs on controlQueue. Idempotent.
+    /// Deliberately does NOT touch the shared AVAudioSession (the recorder /
+    /// JS layer owns restore). Callers gate on sessionID for deferred paths.
     private func teardown() {
-        stopEngineOnly()
+        Self.stopEngine(audioEngine)
         audioEngine = nil
         resultsTask?.cancel()
         resultsTask = nil
@@ -443,8 +496,6 @@ final class LiveTranscriber: @unchecked Sendable {
         inputContinuation = nil
         analyzer = nil
         transcriber = nil
-        sessionOnResult = nil
-        sessionOnError = nil
         if let observer = interruptionObserver {
             NotificationCenter.default.removeObserver(observer)
             interruptionObserver = nil
@@ -453,8 +504,10 @@ final class LiveTranscriber: @unchecked Sendable {
             NotificationCenter.default.removeObserver(observer)
             configChangeObserver = nil
         }
-        isActive = false
-        log?("🎤🔴 [LT] live transcription stopped")
+        if isActive {
+            isActive = false
+            log?("🎤🔴 [LT] live transcription stopped")
+        }
     }
 }
 

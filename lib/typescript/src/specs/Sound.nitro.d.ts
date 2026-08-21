@@ -195,7 +195,9 @@ export interface Sound extends HybridObject<{
      * Check/provision the on-device model for the given locale.
      * @returns 'ready' (model installed), 'downloading' (install kicked off in
      *          the background — fall back to the legacy engine this session),
-     *          or 'unsupported' (OS < 26 or locale not supported).
+     *          'download-failed' (provisioning request failed outright — see
+     *          os_log for the cause), or 'unsupported' (OS < 26 or locale not
+     *          supported).
      */
     ensureLiveTranscriptionAssets(locale: string): Promise<string>;
     /**
