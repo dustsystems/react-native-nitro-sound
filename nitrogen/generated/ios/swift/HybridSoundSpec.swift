@@ -72,6 +72,11 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func removeLiveTranscriptionResultCallback() throws -> Void
   func setLiveTranscriptionErrorCallback(callback: @escaping (_ code: String, _ message: String) -> Void) throws -> Void
   func removeLiveTranscriptionErrorCallback() throws -> Void
+  func startSleepCapture(configJson: String) throws -> Promise<Void>
+  func stopSleepCapture() throws -> Promise<String>
+  func isSleepCaptureActive() throws -> Bool
+  func setSleepEpisodeCallback(callback: @escaping (_ episodeJson: String) -> Void) throws -> Void
+  func getSleepCaptureStats() throws -> String
 }
 
 public extension HybridSoundSpec_protocol {

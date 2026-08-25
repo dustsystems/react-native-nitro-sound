@@ -3062,6 +3062,44 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return created
     }
 
+    // MARK: - Sleep-Talking Capture (forwarders only — engine lives in SleepCapture.swift)
+
+    public func startSleepCapture(configJson: String) throws -> Promise<Void> {
+        let promise = Promise<Void>()
+        SleepCapture.shared.log = { [weak self] message in self?.bridgedLog(message) }
+        // Guarded mode / ownAudioOverlap: reads existing playback state only.
+        SleepCapture.shared.ownAudioActiveProvider = { [weak self] in
+            guard let self else { return false }
+            return self.currentPlayerNode?.isPlaying == true || self.isAmbientLoopPlaying
+        }
+        SleepCapture.shared.start(configJson: configJson) { error in
+            if let error {
+                promise.reject(withError: RuntimeError.error(withMessage: error.localizedDescription))
+            } else {
+                promise.resolve(withResult: ())
+            }
+        }
+        return promise
+    }
+
+    public func stopSleepCapture() throws -> Promise<String> {
+        let promise = Promise<String>()
+        SleepCapture.shared.stop { summaryJson in promise.resolve(withResult: summaryJson) }
+        return promise
+    }
+
+    public func isSleepCaptureActive() throws -> Bool {
+        return SleepCapture.shared.isActive()
+    }
+
+    public func setSleepEpisodeCallback(callback: @escaping (_ episodeJson: String) -> Void) throws {
+        SleepCapture.shared.episodeCallback = callback
+    }
+
+    public func getSleepCaptureStats() throws -> String {
+        return SleepCapture.shared.statsJson()
+    }
+
     // MARK: - Crossfade Methods
     public func crossfadeTo(uri: String, duration: Double? = 3.0, targetVolume: Double? = 1.0) throws -> Promise<String> {
         let promise = Promise<String>()

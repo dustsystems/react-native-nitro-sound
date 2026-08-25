@@ -319,6 +319,31 @@ abstract class HybridSoundSpec: HybridObject() {
   @DoNotStrip
   @Keep
   abstract fun removeLiveTranscriptionErrorCallback(): Unit
+  
+  @DoNotStrip
+  @Keep
+  abstract fun startSleepCapture(configJson: String): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun stopSleepCapture(): Promise<String>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun isSleepCaptureActive(): Boolean
+  
+  abstract fun setSleepEpisodeCallback(callback: (episodeJson: String) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setSleepEpisodeCallback_cxx(callback: Func_void_std__string): Unit {
+    val __result = setSleepEpisodeCallback(callback)
+    return __result
+  }
+  
+  @DoNotStrip
+  @Keep
+  abstract fun getSleepCaptureStats(): String
 
   // Default implementation of `HybridObject.toString()`
   override fun toString(): String {

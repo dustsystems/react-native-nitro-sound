@@ -113,6 +113,11 @@ namespace margelo::nitro::sound {
     void removeLiveTranscriptionResultCallback() override;
     void setLiveTranscriptionErrorCallback(const std::function<void(const std::string& /* code */, const std::string& /* message */)>& callback) override;
     void removeLiveTranscriptionErrorCallback() override;
+    std::shared_ptr<Promise<void>> startSleepCapture(const std::string& configJson) override;
+    std::shared_ptr<Promise<std::string>> stopSleepCapture() override;
+    bool isSleepCaptureActive() override;
+    void setSleepEpisodeCallback(const std::function<void(const std::string& /* episodeJson */)>& callback) override;
+    std::string getSleepCaptureStats() override;
 
   private:
     jni::global_ref<JHybridSoundSpec::JavaPart> _javaPart;

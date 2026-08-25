@@ -686,5 +686,50 @@ namespace margelo::nitro::sound {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void()>("removeLiveTranscriptionErrorCallback");
     method(_javaPart);
   }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::startSleepCapture(const std::string& configJson) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JString> /* configJson */)>("startSleepCapture");
+    auto __result = method(_javaPart, jni::make_jstring(configJson));
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  std::shared_ptr<Promise<std::string>> JHybridSoundSpec::stopSleepCapture() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("stopSleepCapture");
+    auto __result = method(_javaPart);
+    return [&]() {
+      auto __promise = Promise<std::string>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& __boxedResult) {
+        auto __result = jni::static_ref_cast<jni::JString>(__boxedResult);
+        __promise->resolve(__result->toStdString());
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  bool JHybridSoundSpec::isSleepCaptureActive() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jboolean()>("isSleepCaptureActive");
+    auto __result = method(_javaPart);
+    return static_cast<bool>(__result);
+  }
+  void JHybridSoundSpec::setSleepEpisodeCallback(const std::function<void(const std::string& /* episodeJson */)>& callback) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string::javaobject> /* callback */)>("setSleepEpisodeCallback_cxx");
+    method(_javaPart, JFunc_void_std__string_cxx::fromCpp(callback));
+  }
+  std::string JHybridSoundSpec::getSleepCaptureStats() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JString>()>("getSleepCaptureStats");
+    auto __result = method(_javaPart);
+    return __result->toStdString();
+  }
 
 } // namespace margelo::nitro::sound

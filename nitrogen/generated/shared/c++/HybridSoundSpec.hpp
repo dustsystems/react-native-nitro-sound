@@ -117,6 +117,11 @@ namespace margelo::nitro::sound {
       virtual void removeLiveTranscriptionResultCallback() = 0;
       virtual void setLiveTranscriptionErrorCallback(const std::function<void(const std::string& /* code */, const std::string& /* message */)>& callback) = 0;
       virtual void removeLiveTranscriptionErrorCallback() = 0;
+      virtual std::shared_ptr<Promise<void>> startSleepCapture(const std::string& configJson) = 0;
+      virtual std::shared_ptr<Promise<std::string>> stopSleepCapture() = 0;
+      virtual bool isSleepCaptureActive() = 0;
+      virtual void setSleepEpisodeCallback(const std::function<void(const std::string& /* episodeJson */)>& callback) = 0;
+      virtual std::string getSleepCaptureStats() = 0;
 
     protected:
       // Hybrid Setup

@@ -304,4 +304,63 @@ export interface Sound
   /** Error callback: (code, message). Codes: 'unsupported' | 'assets-missing' | 'audio-engine' | 'analyzer'. */
   setLiveTranscriptionErrorCallback(callback: (code: string, message: string) => void): void;
   removeLiveTranscriptionErrorCallback(): void;
+
+  // Sleep-talking capture (MVP: overnight capture-only, Tier 0 + Tier 1)
+  //
+  // Implementation lives in ios/SleepCapture.swift. It owns its OWN small
+  // AVAudioEngine (the LiveTranscriber second-client topology) and joins the
+  // shared AVAudioSession politely — the overnight Nitro engine and the live
+  // dream-recording path (beginRecording/endRecording) are untouched.
+  //
+  // configJson keys mirror docs/projects/sleep-talking/08-decision-rules.md
+  // constant names; unknown/missing keys fall back to the doc-08 defaults
+  // compiled into SleepCaptureConfig. Keys (all optional):
+  //   configVersion, sensitivity ('low'|'medium'|'high'),
+  //   tier0MarginDb, tier0FloorPercentile, tier0FloorWindowSec,
+  //   tier0FloorRiseMaxDbPerMin, tier0TriggerFrames, tier0ReleaseHysteresisDb,
+  //   tier0BandLowHz, tier0BandHighHz, guardedModeExtraMarginDb,
+  //   vadStartProbability, vadContinueProbability, silenceHangoverSec,
+  //   mergeWindowSec, maxClipSec, preRollSec, maxClipsPerNight,
+  //   maxEncodedSecPerNight, capBreachVadStepUp, capBreachVadCap,
+  //   capBreachMarginStepDb, minFreeDiskMb, watchdogIntervalSec, aacBitRate
+  //
+  // Episode JSON (fired via setSleepEpisodeCallback as each clip closes):
+  //   { id, filePath, startedAtMs, endedAtMs, durationSec, peakDb,
+  //     vadConfidence, preRollSec, ownAudioOverlap }
+  // Clips are AAC .m4a, 16 kHz mono, written to
+  // <Application Support>/sleep-capture/ — local-only, never synced.
+
+  /**
+   * Arm overnight sleep-talking capture. Must be called while the app is
+   * foregrounded (iOS forbids starting recording from the background).
+   * Rejects if capture is already active, the mic permission is missing,
+   * or free disk is below the preflight floor.
+   */
+  startSleepCapture(configJson: string): Promise<void>;
+
+  /**
+   * Disarm capture. Finalizes any in-flight clip first, then resolves with
+   * a session summary JSON: { id, startedAtMs, endedAtMs, endReason,
+   * episodeCount, totalEncodedSec, tier0Wakes, tier1Starts, gapIntervals,
+   * noisyNight, configVersion }. Safe to call when not active (summary of
+   * the last session, or an empty summary if none ran).
+   */
+  stopSleepCapture(): Promise<string>;
+
+  /** Whether the overnight capture engine is currently armed. */
+  isSleepCaptureActive(): boolean;
+
+  /**
+   * Register the per-episode callback. Fires through the night as each clip
+   * closes (episode JSON above). Set BEFORE startSleepCapture.
+   */
+  setSleepEpisodeCallback(callback: (episodeJson: string) => void): void;
+
+  /**
+   * Live stats JSON for the debug UI: { active, state, noiseFloorDb,
+   * lastRmsDb, effectiveMarginDb, tier0Open, guarded, vadReady,
+   * vadSuspended, thermalState, episodeCount, tier0Wakes, tier1Starts,
+   * totalEncodedSec, noisyNight, gapCount, uptimeSec, endReason }.
+   */
+  getSleepCaptureStats(): string;
 }
