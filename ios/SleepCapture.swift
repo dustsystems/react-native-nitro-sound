@@ -182,6 +182,11 @@ final class SleepCapture {
     private var floorWindowFilled = 0
     private var framesSinceFloorUpdate = 0
     private var noiseFloorDb: Double = -70.0
+    /// False until the first real floor measurement. The gate must not arm
+    /// against the -70 cold-start value: a normal room sits ~30 dB above it,
+    /// which opened an episode instantly and froze the idle-only floor forever
+    /// (measured 2026-08-25: noiseFloorDb -70 vs lastRmsDb -33.9, latched).
+    private var floorSeeded = false
     private var lastFloorUpdateAt = Date()
     private var lastRmsDb: Double = -100.0
     private var tier0Open = false
@@ -195,6 +200,9 @@ final class SleepCapture {
     private var vadReady = false
     private var vadSuspended = false               // thermal .serious
     private var vadStartProbability = 0.35         // mutable: cap-breach step-ups
+    private var lastVadProb = 0.0                  // telemetry: latest chunk probability
+    private var vadProbRing = [Double]()           // telemetry: ~last minute of chunk probs
+    private var vadProbRingNext = 0
     private var vadAccum: [Float] = []
     private var vadChunkContinuation: AsyncStream<[Float]>.Continuation?
     private var vadConsumerTask: Task<Void, Never>?
@@ -340,6 +348,10 @@ final class SleepCapture {
                 "vadReady": vadReady,
                 "vadSuspended": vadSuspended,
                 "vadStartProbability": vadStartProbability,
+                "lastVadProb": round3(lastVadProb),
+                "vadProbP50": round3(vadProbPercentile(0.5)),
+                "vadProbP95": round3(vadProbPercentile(0.95)),
+                "floorSeeded": floorSeeded,
                 "thermalState": thermalName(ProcessInfo.processInfo.thermalState),
                 "episodeCount": episodeCount,
                 "tier0Wakes": tier0Wakes,
@@ -464,6 +476,10 @@ final class SleepCapture {
         floorWindowFilled = 0
         framesSinceFloorUpdate = 0
         noiseFloorDb = -70.0
+        floorSeeded = false
+        lastVadProb = 0.0
+        vadProbRing.removeAll(keepingCapacity: true)
+        vadProbRingNext = 0
         lastFloorUpdateAt = Date()
         lastRmsDb = -100.0
         tier0Open = false
@@ -546,6 +562,16 @@ final class SleepCapture {
 
     private func handleVadProbability(_ probability: Double, generation: UInt64) {
         guard active, sessionGeneration == generation else { return }
+        // Telemetry: latest prob + a ~1-minute ring (256 ms chunks) so stats can
+        // report what this runtime actually scores ambient — the FluidAudio
+        // chunk probabilities do not match the offline harness's streaming ones.
+        lastVadProb = probability
+        if vadProbRing.count < 240 {
+            vadProbRing.append(probability)
+        } else {
+            vadProbRing[vadProbRingNext] = probability
+            vadProbRingNext = (vadProbRingNext + 1) % 240
+        }
         if state == .recording || state == .pendingClose {
             episodeVadConfidence = max(episodeVadConfidence, probability)
         }
@@ -683,10 +709,19 @@ final class SleepCapture {
         floorWindowNext = (floorWindowNext + 1) % floorWindow.count
         floorWindowFilled = min(floorWindowFilled + 1, floorWindow.count)
         framesSinceFloorUpdate += 1
-        if state == .idle, framesSinceFloorUpdate >= 32, floorWindowFilled >= 32 {
+        // Floor updates run in EVERY state (not idle-only): updateNoiseFloor()
+        // is rise-clamped and skips falls while an episode is in progress, which
+        // preserves doc 08's "never adapt to an in-progress episode" intent
+        // without the failure mode where a recording freezes the floor forever.
+        if framesSinceFloorUpdate >= 32, floorWindowFilled >= 32 {
             framesSinceFloorUpdate = 0
             updateNoiseFloor()
         }
+
+        // Warm-up: until the first real measurement seeds the floor, the gate
+        // stays disarmed — arming against the -70 cold-start value opens on any
+        // normal room instantly. Costs ~1 s of deafness at arm time.
+        guard floorSeeded else { return }
 
         let trigger = noiseFloorDb + effectiveMarginDb()
         let release = trigger - config.tier0ReleaseHysteresisDb
@@ -737,12 +772,18 @@ final class SleepCapture {
         let idx = min(filled - 1, Int(Double(filled) * config.tier0FloorPercentile))
         let candidate = Double(window[idx])
         let now = Date()
-        if candidate > noiseFloorDb {
+        if !floorSeeded {
+            // First real measurement replaces the -70 cold-start value outright.
+            // Clamping the seed would leave the gate deaf-then-hair-triggered for
+            // ~10 min (3 dB/min from -70 to a normal -40 room).
+            noiseFloorDb = candidate
+            floorSeeded = true
+        } else if candidate > noiseFloorDb {
             // Rise clamped (doc 08: sustained snoring can't drag the floor up).
             let dtMin = now.timeIntervalSince(lastFloorUpdateAt) / 60.0
             noiseFloorDb = min(candidate, noiseFloorDb + config.tier0FloorRiseMaxDbPerMin * dtMin)
-        } else {
-            noiseFloorDb = candidate  // falls unclamped — fast re-arm
+        } else if state == .idle {
+            noiseFloorDb = candidate  // falls unclamped — fast re-arm (idle only)
         }
         lastFloorUpdateAt = now
     }
@@ -1164,6 +1205,17 @@ final class SleepCapture {
 
     private func round1(_ value: Double) -> Double {
         (value * 10).rounded() / 10
+    }
+
+    private func round3(_ value: Double) -> Double {
+        (value * 1000).rounded() / 1000
+    }
+
+    private func vadProbPercentile(_ p: Double) -> Double {
+        guard !vadProbRing.isEmpty else { return 0 }
+        let sorted = vadProbRing.sorted()
+        let idx = min(sorted.count - 1, Int(Double(sorted.count) * p))
+        return sorted[idx]
     }
 
     private func thermalName(_ state: ProcessInfo.ThermalState) -> String {
