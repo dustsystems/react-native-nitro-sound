@@ -1833,8 +1833,23 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     self.didEmitPlaybackEnd = false
                     self.startPlayTimer()
 
-                    playerNode.play()
-                    self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
+                    // endEngineSession() can stop and nil the engine between this
+                    // block being queued on main and it running, and a later
+                    // session can install a fresh engine, leaving this captured
+                    // node detached. play() on a node whose engine is missing or
+                    // stopped raises an ObjC exception that no Swift do/catch can
+                    // catch, so it traps the process. Key the check on the node's
+                    // own engine (as :3406 does) using the isRunning test the
+                    // teardown uses (:943) — self.audioEngine would be the wrong
+                    // subject, since it may be a new engine this node is not on.
+                    // This narrows the window; it does not close it, as the check
+                    // and the play are not atomic with a teardown on another queue.
+                    if let engine = playerNode.engine, engine.isRunning {
+                        playerNode.play()
+                        self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
+                    } else {
+                        self.bridgedLog("⚠️ SKIPPED PLAY — engine torn down before main-queue play (Node \(self.getNodeName(for: playerNode)))")
+                    }
 
                     // Update Now Playing with track info
                     let filename = url.lastPathComponent
