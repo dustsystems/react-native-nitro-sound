@@ -198,6 +198,11 @@ final class SleepCapture {
     // Tier 1
     private var vadManager: VadManager?
     private var vadReady = false
+    /// True only when VAD init FAILED (model download error). Degraded
+    /// Tier-0-only episode opens key off this, not `!vadReady` — otherwise the
+    /// ~2 s init window races the freshly-seeded gate and opens an ambient
+    /// episode before the VAD gets a vote (observed on-sim 2026-08-25).
+    private var vadInitFailed = false
     private var vadSuspended = false               // thermal .serious
     private var vadStartProbability = 0.35         // mutable: cap-breach step-ups
     private var lastVadProb = 0.0                  // telemetry: latest chunk probability
@@ -477,6 +482,7 @@ final class SleepCapture {
         framesSinceFloorUpdate = 0
         noiseFloorDb = -70.0
         floorSeeded = false
+        vadInitFailed = false
         lastVadProb = 0.0
         vadProbRing.removeAll(keepingCapacity: true)
         vadProbRingNext = 0
@@ -535,6 +541,7 @@ final class SleepCapture {
                 self?.queue.async {
                     guard let self, self.sessionGeneration == generation else { return }
                     self.vadReady = false
+                    self.vadInitFailed = true
                     self.log?("⚠️ [SC] Tier 1 VAD unavailable (\(error.localizedDescription)) — running Tier-0-only")
                 }
             }
@@ -734,7 +741,7 @@ final class SleepCapture {
                     tier0UnderCount = 0
                     // Degraded mode (no usable Tier 1): the gate alone opens
                     // episodes — recall over precision, judged in the morning.
-                    if state == .idle, !vadReady || vadSuspended {
+                    if state == .idle, vadInitFailed || vadSuspended {
                         openEpisode(vadStarted: false, initialConfidence: 0)
                     }
                 }
@@ -752,7 +759,7 @@ final class SleepCapture {
                 tier0UnderCount = 0
             }
         }
-        if tier0Open, !vadReady || vadSuspended {
+        if tier0Open, vadInitFailed || vadSuspended {
             lastVoiceAt = Date()
             if state == .pendingClose {
                 mergeIntoOpenEpisode()
