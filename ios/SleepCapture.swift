@@ -8,18 +8,22 @@ import FluidAudio
 /// Design sources: docs/projects/sleep-talking/ 02 (architecture), 03 (detection),
 /// 04 (background-audio survival), 08 (decision rules / constants) in the app repo.
 ///
-/// Topology — the LiveTranscriber precedent, NOT the overnight Nitro engine:
-/// this class owns its own small `AVAudioEngine` and joins the shared
-/// `AVAudioSession` as a polite second client. It adopts Sound.swift's exact
-/// category/mode/options (`.playAndRecord` + `.default` +
-/// `[.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers]`, input pinned to
-/// the built-in mic, never `.measurement`) and NEVER deactivates the session —
-/// the session lifecycle belongs to whoever armed it first. This keeps the
-/// production dream-recording path (beginRecording/endRecording and the shared
-/// engine's tap) completely untouched.
+/// Topology — the ONE overnight engine, third tap consumer:
+/// this class owns NO `AVAudioEngine`. It consumes `Sound.swift`'s single
+/// long-lived engine's persistent input tap as a third fan-out consumer,
+/// beside dream recording and voice commands — the same consolidation that
+/// fixed the dual-engine mic conflict (see docs/architecture/audio/
+/// investigations/voice-command-audio-engine-conflict.md). The Sound
+/// forwarder wires two hooks: `ensureSharedEngineTap` (arm-time keep-alive —
+/// engine running + tap installed, returns the input hw format; the
+/// keep-alive rule lives in Sound.swift) and `setTapFanOutArmed` (atomic RT
+/// flag; disarm also lets Sound release the tap if nothing else needs it).
+/// Session category/mode/options and the built-in-mic input pin are owned by
+/// Sound.setupAudioEngine — this class never touches the AVAudioSession and
+/// never stops the shared engine.
 ///
 /// Pipeline (all state owned by one serial queue):
-///   tap @ hardware rate (RT: copy-only into SPSCRingBuffer)
+///   shared input tap @ hardware rate (RT: copy-only into this class's SPSCRingBuffer)
 ///     → drain timer → AVAudioConverter → 16 kHz mono float
 ///     → Tier 0: 80–4000 Hz biquad band-pass → 512-sample (32 ms) frame RMS →
 ///       adaptive noise-floor gate (running 10th percentile, rise-clamped)
@@ -48,6 +52,15 @@ final class SleepCapture {
     /// playing — drives guarded mode + ownAudioOverlap tagging. Wired by the
     /// Sound forwarder from existing playback state.
     var ownAudioActiveProvider: (() -> Bool)?
+    /// Wired by the Sound forwarder. Ensures the ONE shared engine is running
+    /// with the persistent input tap installed (Sound's keep-alive rule) and
+    /// returns the input hardware format. Throws when the engine can't start
+    /// (e.g. mic held by another process) — callers back off and retry.
+    var ensureSharedEngineTap: (() throws -> AVAudioFormat)?
+    /// Wired by the Sound forwarder. Arms/disarms the RT tap fan-out into
+    /// `ingestTapBuffer`; on disarm Sound also releases the tap when no other
+    /// consumer (recorder, voice commands) needs it.
+    var setTapFanOutArmed: ((Bool) -> Void)?
 
     // MARK: - Config (doc-08 defaults compiled in; JSON keys mirror doc-08 names)
 
@@ -143,8 +156,8 @@ final class SleepCapture {
     private let queue = DispatchQueue(label: "com.dust.sleepcapture", qos: .userInitiated)
     private var config = Config()
 
-    // Engine / audio plumbing
-    private var engine: AVAudioEngine?
+    // Audio plumbing (no engine — samples arrive from Sound's shared tap via
+    // `ingestTapBuffer`)
     private var spsc: SPSCRingBuffer?
     private var converter: AVAudioConverter?
     private var hwFormat: AVAudioFormat?
@@ -282,11 +295,10 @@ final class SleepCapture {
                 let dir = try makeOutputDir()
                 try preflightDisk(at: dir)
                 outputDir = dir
-                try configureSessionAsSecondClient()
                 resetDetectionState()
-                try buildEngineAndTap()
+                try attachToSharedEngine()
             } catch {
-                teardownEngine()
+                detachFromSharedEngine()
                 completion(error)
                 return
             }
@@ -399,35 +411,26 @@ final class SleepCapture {
         // still route to the disk_full stop path.
     }
 
-    /// Join the shared AVAudioSession without fighting whoever configured it.
-    /// Category/mode/options are Sound.swift's verbatim (see the header note);
-    /// if the session is already .playAndRecord we touch nothing but the input
-    /// pin. This class NEVER deactivates the session.
-    private func configureSessionAsSecondClient() throws {
-        let session = AVAudioSession.sharedInstance()
-        if session.category != .playAndRecord {
-            try session.setCategory(
-                .playAndRecord,
-                mode: .default,
-                options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers]
-            )
+    /// RT-SAFE — called from Sound.swift's shared input-tap callback while the
+    /// fan-out is armed: copy-only push into this class's SPSC ring. No
+    /// allocation, no locks, no logging (Sound.swift tap pattern; the counter
+    /// is the same accepted plain increment as tapCallbackCounter).
+    func ingestTapBuffer(_ buffer: AVAudioPCMBuffer) {
+        tapCounter &+= 1
+        if let ring = spsc {
+            _ = ring.write(buffer)
         }
-        if session.maximumInputNumberOfChannels >= 1 {
-            try? session.setPreferredInputNumberOfChannels(1)
-        }
-        // Pin input to the built-in mic (doc 04: never capture from AirPods on
-        // the nightstand; also the app-wide Bluetooth-survival invariant).
-        if let inputs = session.availableInputs,
-           let builtInMic = inputs.first(where: { $0.portType == .builtInMic }) {
-            try? session.setPreferredInput(builtInMic)
-        }
-        try session.setActive(true)
     }
 
-    private func buildEngineAndTap() throws {
-        let engine = AVAudioEngine()
-        let input = engine.inputNode
-        let hw = input.outputFormat(forBus: 0)
+    /// Attach as the third consumer of the ONE engine's persistent input tap
+    /// (beside dream recording and voice commands). Asks Sound to keep the
+    /// engine+tap alive (see the keep-alive rule in Sound.swift), then builds
+    /// this class's converter chain and arms the RT fan-out.
+    private func attachToSharedEngine() throws {
+        guard let ensure = ensureSharedEngineTap else {
+            throw RuntimeErrorShim.message("Shared engine hooks not wired")
+        }
+        let hw = try ensure()
         guard hw.sampleRate > 0, hw.channelCount > 0 else {
             throw RuntimeErrorShim.message("Audio input unavailable (format \(hw))")
         }
@@ -442,33 +445,24 @@ final class SleepCapture {
         }
 
         if spsc == nil {
-            // Same sizing as Sound.swift: 64 × 8192 ≥ any tap buffer iOS delivers.
+            // Same sizing as Sound.swift: 64 × 8192 ≥ any tap buffer iOS
+            // delivers (~4800 frames at 48 kHz), ~6 s of headroom against the
+            // 25 ms drain — sized in samples, so the shared tap's delivery
+            // size doesn't matter as long as one buffer fits a chunk.
             spsc = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
         }
         spsc?.reset()
         tapCounter = 0
         lastWatchdogTapCount = 0
 
-        // RT-SAFE: copy-only, no allocation, no logging (Sound.swift pattern).
-        input.installTap(onBus: 0, bufferSize: 1024, format: hw) { [weak self] buffer, _ in
-            guard let self, let ring = self.spsc else { return }
-            self.tapCounter &+= 1
-            _ = ring.write(buffer)
-        }
-
-        engine.prepare()
-        do {
-            try engine.start()
-        } catch {
-            input.removeTap(onBus: 0)
-            throw error
-        }
-        self.engine = engine
         self.hwFormat = monoHw
         self.converter = conv
         self.float16kFormat = target
         self.int16FileFormat = fileFmt
-        log?("😴 [SC] engine up — hw \(Int(hw.sampleRate)) Hz \(hw.channelCount) ch → 16 kHz mono")
+        // Arm LAST: the RT fan-out starts pushing the moment this flips, and
+        // everything above must be in place first.
+        setTapFanOutArmed?(true)
+        log?("😴 [SC] attached to shared engine tap — hw \(Int(hw.sampleRate)) Hz \(hw.channelCount) ch → 16 kHz mono")
     }
 
     private func resetDetectionState() {
@@ -1004,26 +998,17 @@ final class SleepCapture {
                 } else if typeValue == AVAudioSession.InterruptionType.ended.rawValue {
                     // .ended is a HINT (doc 04) — attempt recovery now, but the
                     // watchdog remains the authority if this never fires.
-                    self.log?("😴 [SC] interruption ended (shouldResume=\(shouldResume)) — rebuilding")
-                    self.attemptRebuild(cause: "interruption-ended")
+                    self.log?("😴 [SC] interruption ended (shouldResume=\(shouldResume)) — reattaching")
+                    self.attemptReattach(cause: "interruption-ended")
                 }
             }
         })
-        observers.append(center.addObserver(
-            forName: AVAudioSession.routeChangeNotification,
-            object: AVAudioSession.sharedInstance(),
-            queue: nil
-        ) { [weak self] _ in
-            guard let self else { return }
-            self.queue.async {
-                guard self.active, self.state != .suspended else { return }
-                // Input is pinned to the built-in mic, but doc 04's safe
-                // response to any route change is a full rebuild of THIS
-                // engine (never the shared one).
-                self.log?("😴 [SC] route change — rebuilding capture engine")
-                self.attemptRebuild(cause: "route-change")
-            }
-        })
+        // No route-change observer: route recovery belongs to the shared
+        // engine (output-side-only re-stamp, input pinned to the built-in mic
+        // so the tap never moves — see Sound.handleEngineConfigurationChange
+        // and docs/architecture/audio/investigations/bluetooth-killing-engine.md).
+        // If a route event somehow silences the tap anyway, the watchdog's
+        // sample-flow check catches it within one interval.
         observers.append(center.addObserver(
             forName: AVAudioSession.mediaServicesWereResetNotification,
             object: AVAudioSession.sharedInstance(),
@@ -1033,7 +1018,7 @@ final class SleepCapture {
             self.queue.async {
                 guard self.active else { return }
                 self.enterSuspended(cause: "media-services-reset")
-                self.attemptRebuild(cause: "media-services-reset")
+                self.attemptReattach(cause: "media-services-reset")
             }
         })
         observers.append(center.addObserver(
@@ -1081,15 +1066,16 @@ final class SleepCapture {
         log?("😴⏸️ [SC] suspended (\(cause)) — clip checkpointed, awaiting recovery")
     }
 
-    /// Full teardown + rebuild of THIS engine (doc 04: naive stop/start often
-    /// "recovers" into a running-but-silent engine). Never touches the shared
-    /// session beyond re-joining it politely.
-    private func attemptRebuild(cause: String) {
+    /// Detach + re-attach to the shared engine's tap (doc 04's rebuild,
+    /// minus the engine: Sound's ensure hook restarts the ONE engine and
+    /// reinstalls the tap if either went away; this class only rebuilds its
+    /// converter chain against the possibly-changed hardware format).
+    /// Episode-level recovery (gap intervals, suspend/idle) is unchanged.
+    private func attemptReattach(cause: String) {
         guard active else { return }
-        teardownEngine()
+        detachFromSharedEngine()
         do {
-            try configureSessionAsSecondClient()
-            try buildEngineAndTap()
+            try attachToSharedEngine()
             frameAccum.removeAll(keepingCapacity: true)
             vadAccum.removeAll(keepingCapacity: true)
             sawNonZeroSinceCheck = false
@@ -1105,7 +1091,7 @@ final class SleepCapture {
             }
             consecutiveRebuildFailures = 0
             rebuildBackoffUntil = .distantPast
-            log?("😴🔁 [SC] engine rebuilt (\(cause)) — capture resumed")
+            log?("😴🔁 [SC] reattached to shared engine (\(cause)) — capture resumed")
         } catch {
             // Stay suspended and keep retrying all night (recovering after a
             // long mic seizure IS the feature), but back off exponentially to
@@ -1119,7 +1105,7 @@ final class SleepCapture {
             consecutiveRebuildFailures += 1
             let backoffSec = min(300.0, config.watchdogIntervalSec * pow(2.0, Double(min(consecutiveRebuildFailures - 1, 4))))
             rebuildBackoffUntil = Date().addingTimeInterval(backoffSec)
-            log?("❌ [SC] rebuild failed (\(cause), attempt \(consecutiveRebuildFailures)): \(error.localizedDescription) — next retry in \(Int(backoffSec))s")
+            log?("❌ [SC] reattach failed (\(cause), attempt \(consecutiveRebuildFailures)): \(error.localizedDescription) — next retry in \(Int(backoffSec))s")
         }
     }
 
@@ -1137,8 +1123,8 @@ final class SleepCapture {
                 openGapCause = "watchdog"
             }
             guard Date() >= rebuildBackoffUntil else { return }
-            log?("🐕 [SC] watchdog: unhealthy (callbacks=\(callbacksAdvanced), state=\(state.rawValue)) — rebuilding")
-            attemptRebuild(cause: "watchdog")
+            log?("🐕 [SC] watchdog: unhealthy (callbacks=\(callbacksAdvanced), state=\(state.rawValue)) — reattaching")
+            attemptReattach(cause: "watchdog")
         }
     }
 
@@ -1163,7 +1149,7 @@ final class SleepCapture {
         drainTimer?.cancel(); drainTimer = nil
         tickTimer?.cancel(); tickTimer = nil
         watchdogTimer?.cancel(); watchdogTimer = nil
-        teardownEngine()
+        detachFromSharedEngine()
         observers.forEach { NotificationCenter.default.removeObserver($0) }
         observers.removeAll()
         vadChunkContinuation?.finish()
@@ -1191,15 +1177,13 @@ final class SleepCapture {
         log?("😴🔴 [SC] sleep capture stopped (\(reason)) — \(episodeCount) clips, \(Int(totalEncodedSec))s encoded, \(gapIntervals.count) gaps")
     }
 
-    /// Stops and releases THIS class's engine only. Deliberately never calls
-    /// `setActive(false)` — the shared session belongs to the recorder-first
-    /// teardown order the JS layer enforces.
-    private func teardownEngine() {
-        if let engine {
-            engine.inputNode.removeTap(onBus: 0)
-            if engine.isRunning { engine.stop() }
-        }
-        engine = nil
+    /// Disarms the RT tap fan-out and drops this class's converter chain.
+    /// Sound releases the tap only if no other consumer (recorder, voice
+    /// commands) needs it, and NEVER stops the shared engine on our account —
+    /// the engine stops where it always did (endEngineSession). This class
+    /// never touches the AVAudioSession.
+    private func detachFromSharedEngine() {
+        setTapFanOutArmed?(false)
         converter = nil
         hwFormat = nil
     }
