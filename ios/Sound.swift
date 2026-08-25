@@ -156,6 +156,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// this queue never dispatch sync onto any other queue (bridgedLog is
     /// async-to-main).
     private let tapControlQueue = DispatchQueue(label: "com.hypnos.tapControl")
+    /// True when sleep capture's ensure hook is the party that STARTED the
+    /// engine (alarm-only nights: nothing else would have). Cleared on the
+    /// sleep-capture release below and on endEngineSession. Guards the
+    /// disarm-time engine release so capture never stops an engine someone
+    /// else started.
+    private var engineStartedForSleepCapture = false
 
     // Pre-allocated conversion buffer for worker (reused every chunk)
     private var workerConversionBuffer: AVAudioPCMBuffer?
@@ -1013,6 +1019,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
 
             // Step 4: Stop the audio engine
+            self.engineStartedForSleepCapture = false
             if let engine = self.audioEngine, engine.isRunning {
                 engine.stop()
                 self.bridgedLog("🔴 AUDIO ENGINE STOPPED")
@@ -3170,6 +3177,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 bridgedLog("⚠️ Session activation for sleep capture failed: \(error.localizedDescription)")
             }
             try engine.start()
+            engineStartedForSleepCapture = true
             bridgedLog("😴 Engine started for sleep capture keep-alive")
         }
         let hwFormat = engine.inputNode.outputFormat(forBus: 0)
@@ -3192,6 +3200,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// path re-checks the tap under the lock so a stopRecorder that removed it
     /// in the ensure→arm window can't leave capture armed against no tap.
     fileprivate func setSleepCaptureFanOutArmed(_ armed: Bool) {
+        defer { if !armed { releaseEngineAfterSleepCaptureIfIdle() } }
         tapControlQueue.sync {
             spsc_store_release_i64(sleepCaptureFanOutArmed, armed ? 1 : 0)
             if armed {
@@ -3210,6 +3219,42 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 bridgedLog("🎙️⚪ SLEEP-CAPTURE TAP REMOVED (disarm, no other consumer)")
             }
         }
+    }
+
+    /// Disarm-time engine release: when sleep capture started the engine for
+    /// its own keep-alive and NOTHING else is using audio, wind the engine and
+    /// session down exactly like endEngineSession does — otherwise the idle
+    /// running engine keeps holding the audio session and every daytime
+    /// expo-audio player fails with "insufficient priority" (observed
+    /// on-device 2026-08-25 after stopping a test capture).
+    private func releaseEngineAfterSleepCaptureIfIdle() {
+        guard engineStartedForSleepCapture else { return }
+        let othersActive = tapControlQueue.sync { tapOwnedByRecorder }
+            || isCommandRecognitionActive
+            || isRecordingSession
+            || currentPlayerNode?.isPlaying == true
+            || isAmbientLoopPlaying
+        guard !othersActive else { return }
+        engineStartedForSleepCapture = false
+        if let engine = audioEngine, engine.isRunning {
+            engine.stop()
+            bridgedLog("🔴 AUDIO ENGINE STOPPED (sleep-capture release)")
+        }
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            bridgedLog("⚠️ Session deactivation after sleep-capture release failed: \(error.localizedDescription)")
+        }
+        // Same end state as endEngineSession so the next audio user
+        // re-initializes from scratch.
+        audioEngine = nil
+        audioPlayerNodeA = nil
+        audioPlayerNodeB = nil
+        audioPlayerNodeC = nil
+        audioPlayerNodeD = nil
+        currentPlayerNode = nil
+        audioEngineInitialized = false
+        bridgedLog("😴🔚 [SC] engine released after sleep-capture disarm (no other consumers)")
     }
 
     public func startSleepCapture(configJson: String) throws -> Promise<Void> {
