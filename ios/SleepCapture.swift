@@ -218,6 +218,11 @@ final class SleepCapture {
     /// episode before the VAD gets a vote (observed on-sim 2026-08-25).
     private var vadInitFailed = false
     private var vadSuspended = false               // thermal .serious
+    /// True while a dream recording (beginRecording..endRecording) is in
+    /// progress: the user is DELIBERATELY dictating, so sleep capture pauses
+    /// (any open episode is finalized) instead of filing the dictation as
+    /// sleep-talking clips. Not a gap and not a fault — the watchdog skips it.
+    private var pausedForDreamRecording = false
     private var vadStartProbability = 0.35         // mutable: cap-breach step-ups
     private var lastVadProb = 0.0                  // telemetry: latest chunk probability
     private var vadProbRing = [Double]()           // telemetry: ~last minute of chunk probs
@@ -321,6 +326,7 @@ final class SleepCapture {
             episodeCount = 0
             totalEncodedSec = 0.0
             noisyNight = false
+            pausedForDreamRecording = false
             watchdogTickCount = 0
             gapIntervals = []
             openGapStartMs = nil
@@ -366,6 +372,7 @@ final class SleepCapture {
                 "guarded": guardedNow,
                 "vadReady": vadReady,
                 "vadSuspended": vadSuspended,
+                "pausedForDreamRecording": pausedForDreamRecording,
                 "vadStartProbability": vadStartProbability,
                 "lastVadProb": round3(lastVadProb),
                 "vadProbP50": round3(vadProbPercentile(0.5)),
@@ -1054,6 +1061,33 @@ final class SleepCapture {
     /// Interruption .began: checkpoint the in-flight clip to disk immediately
     /// (lose nothing), open a gap interval, park in SUSPENDED. Recovery is
     /// watchdog-driven or via the .ended hint.
+    /// Called from Sound.beginRecording: a dream dictation is starting.
+    func pauseForDreamRecording() {
+        queue.async { [weak self] in
+            guard let self, self.active, !self.pausedForDreamRecording else { return }
+            self.pausedForDreamRecording = true
+            if self.state == .recording || self.state == .pendingClose {
+                self.finalizeEpisode(cause: "dream-recording")
+            }
+            // Flag off = the shared tap stops feeding capture. The tap itself
+            // stays (the recorder owns it while dictating).
+            self.setTapFanOutArmed?(false)
+            self.log?("😴🎤 [SC] paused — dream recording in progress")
+        }
+    }
+
+    /// Called from Sound.endRecording: dictation finished, capture resumes.
+    func resumeAfterDreamRecording() {
+        queue.async { [weak self] in
+            guard let self, self.pausedForDreamRecording else { return }
+            self.pausedForDreamRecording = false
+            guard self.active else { return }
+            self.setTapFanOutArmed?(true)
+            self.sawNonZeroSinceCheck = false
+            self.log?("😴🎤 [SC] resumed after dream recording")
+        }
+    }
+
     private func enterSuspended(cause: String) {
         if state == .recording || state == .pendingClose {
             finalizeEpisode(cause: "checkpoint-\(cause)")
@@ -1119,6 +1153,11 @@ final class SleepCapture {
     /// A running-but-silent engine is caught here, not trusted (doc 04).
     private func watchdogCheck() {
         guard active else { return }
+        if pausedForDreamRecording {
+            lastWatchdogTapCount = tapCounter
+            sawNonZeroSinceCheck = false
+            return
+        }
         let callbacksAdvanced = tapCounter != lastWatchdogTapCount
         lastWatchdogTapCount = tapCounter
         let healthy = callbacksAdvanced && sawNonZeroSinceCheck && state != .suspended

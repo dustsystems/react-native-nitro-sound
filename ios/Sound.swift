@@ -1072,6 +1072,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
      * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
      */
     public func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void> {
+        // A dream dictation is a deliberate act — sleep capture pauses for its
+        // duration so the dictation can't be filed as sleep-talking clips.
+        SleepCapture.shared.pauseForDreamRecording()
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1143,6 +1146,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
      * If no recording is active, this is a no-op.
      */
     public func endRecording() throws -> Promise<Void> {
+        SleepCapture.shared.resumeAfterDreamRecording()
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
