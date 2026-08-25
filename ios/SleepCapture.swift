@@ -171,6 +171,7 @@ final class SleepCapture {
     private var drainTimer: DispatchSourceTimer?
     private var tickTimer: DispatchSourceTimer?
     private var watchdogTimer: DispatchSourceTimer?
+    private var watchdogTickCount = 0
 
     // Session
     private var active = false
@@ -320,6 +321,7 @@ final class SleepCapture {
             episodeCount = 0
             totalEncodedSec = 0.0
             noisyNight = false
+            watchdogTickCount = 0
             gapIntervals = []
             openGapStartMs = nil
             capBreachMarginBoostDb = 0.0
@@ -1060,6 +1062,7 @@ final class SleepCapture {
             openGapStartMs = Self.nowMs()
             openGapCause = cause
         }
+        log?("😴⏸️ [SC] SUSPENDED (\(cause)) — open episode checkpointed, recovery pending")
         state = .suspended
         tier0Open = false
         vadAccum.removeAll(keepingCapacity: true)
@@ -1080,18 +1083,21 @@ final class SleepCapture {
             vadAccum.removeAll(keepingCapacity: true)
             sawNonZeroSinceCheck = false
             if state == .suspended { state = .idle }
+            var gapNote = ""
             if let gapStart = openGapStartMs {
+                let gapSec = Double(Self.nowMs() - gapStart) / 1000.0
                 gapIntervals.append([
                     "startedAtMs": gapStart,
                     "endedAtMs": Self.nowMs(),
                     "cause": openGapCause.isEmpty ? cause : openGapCause,
                 ])
+                gapNote = " after \(String(format: "%.0f", gapSec))s gap (#\(gapIntervals.count))"
                 openGapStartMs = nil
                 openGapCause = ""
             }
             consecutiveRebuildFailures = 0
             rebuildBackoffUntil = .distantPast
-            log?("😴🔁 [SC] reattached to shared engine (\(cause)) — capture resumed")
+            log?("😴🔁 [SC] reattached to shared engine (\(cause)) — capture resumed\(gapNote)")
         } catch {
             // Stay suspended and keep retrying all night (recovering after a
             // long mic seizure IS the feature), but back off exponentially to
@@ -1117,6 +1123,14 @@ final class SleepCapture {
         lastWatchdogTapCount = tapCounter
         let healthy = callbacksAdvanced && sawNonZeroSinceCheck && state != .suspended
         sawNonZeroSinceCheck = false
+        watchdogTickCount += 1
+        // Overnight heartbeat: one compact line every ~10 min turns the
+        // morning log into a timeline — its ABSENCE is the proof of an app
+        // suspension, which no amount of event logging can show.
+        if healthy, watchdogTickCount % 20 == 0 {
+            let upMin = Int((Self.nowMs() - sessionStartMs) / 60000)
+            log?("😴💓 [SC] hb up=\(upMin)m floor=\(String(format: "%.1f", noiseFloorDb))dB rms=\(String(format: "%.1f", lastRmsDb))dB vadP50/95=\(String(format: "%.2f", vadProbPercentile(0.5)))/\(String(format: "%.2f", vadProbPercentile(0.95))) wakes=\(tier0Wakes) t1=\(tier1Starts) eps=\(episodeCount) enc=\(Int(totalEncodedSec))s gaps=\(gapIntervals.count) thermal=\(thermalName(ProcessInfo.processInfo.thermalState))")
+        }
         if !healthy {
             if openGapStartMs == nil {
                 openGapStartMs = Self.nowMs()
