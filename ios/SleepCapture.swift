@@ -77,6 +77,9 @@ final class SleepCapture {
         var minFreeDiskMb = 500.0
         var watchdogIntervalSec = 30.0
         var aacBitRate = 24000
+        /// True when the supplied configJson was not valid JSON — the session
+        /// runs on compiled defaults and stats surface the fact.
+        var parseFailed = false
 
         var baseMarginDb: Double {
             if let explicit = tier0MarginDb { return explicit }
@@ -92,6 +95,7 @@ final class SleepCapture {
             var c = Config()
             guard let data = json.data(using: .utf8),
                   let dict = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any] else {
+                c.parseFailed = true
                 return c
             }
             func num(_ key: String) -> Double? { (dict[key] as? NSNumber)?.doubleValue }
@@ -120,6 +124,12 @@ final class SleepCapture {
             if let v = num("minFreeDiskMb"), v >= 0 { c.minFreeDiskMb = v }
             if let v = num("watchdogIntervalSec"), v >= 5 { c.watchdogIntervalSec = v }
             if let v = num("aacBitRate"), v >= 8000 { c.aacBitRate = Int(v) }
+            // An inverted band collapses the band-pass into a near-null filter
+            // and silently disables Tier 0 — fall back to the doc-08 band.
+            if c.tier0BandLowHz >= c.tier0BandHighHz {
+                c.tier0BandLowHz = 80.0
+                c.tier0BandHighHz = 4000.0
+            }
             return c
         }
     }
@@ -151,6 +161,11 @@ final class SleepCapture {
 
     // Session
     private var active = false
+    /// Monotonic per-arm generation. All deferred async work (VAD model init,
+    /// VAD chunk results) is gated on it so a stale session's late completion
+    /// can never clobber the session that replaced it — the same pattern as
+    /// LiveTranscriber's session-ID gates (submodule commit c62ca10).
+    private var sessionGeneration: UInt64 = 0
     private var sessionId = ""
     private var sessionStartMs: Int64 = 0
     private var endReason = ""
@@ -198,6 +213,10 @@ final class SleepCapture {
     private var episodeOwnAudioOverlap = false
     private var lastVoiceAt = Date.distantPast
     private var pendingCloseDeadline = Date.distantFuture
+    /// Audio arriving during the merge window. Held in memory, flushed into
+    /// the clip only if a restart actually merges; discarded on finalize so an
+    /// unmerged clip is not padded with 3 s of dead air (round-1 review #2).
+    private var pendingTail: [Int16] = []
 
     // Pre-roll: plain circular Int16 buffer. Single-threaded consumer (this
     // queue), so no lock-free structure is needed — SPSCRingBuffer stays in
@@ -219,6 +238,16 @@ final class SleepCapture {
     private var lastWatchdogTapCount = 0
     private var sawNonZeroSinceCheck = false
     private var lastEpisodeAtMs: Int64 = 0
+    /// Consecutive clip open/write failures that were NOT explained by a full
+    /// disk. A persistent I/O fault must terminate the session, not retry all
+    /// night with no signal (round-1 review #3).
+    private var consecutiveWriteFailures = 0
+    /// Rebuild backoff (round-1 review #4): after repeated failed rebuilds
+    /// (e.g. the mic is held for a long phone call) the watchdog keeps trying
+    /// all night — that is the feature — but at a widening interval so an
+    /// unattended 8-hour session doesn't burn battery on 30 s retries.
+    private var consecutiveRebuildFailures = 0
+    private var rebuildBackoffUntil = Date.distantPast
 
     // MARK: - Public API (called from the Sound forwarders)
 
@@ -249,11 +278,18 @@ final class SleepCapture {
                 return
             }
 
+            sessionGeneration &+= 1
             sessionId = UUID().uuidString
             sessionStartMs = Self.nowMs()
             endReason = ""
             state = .idle
             active = true
+            consecutiveWriteFailures = 0
+            consecutiveRebuildFailures = 0
+            rebuildBackoffUntil = .distantPast
+            if config.parseFailed {
+                log?("⚠️ [SC] configJson was not valid JSON — running on compiled doc-08 defaults")
+            }
             tier0Wakes = 0
             tier1Starts = 0
             episodeCount = 0
@@ -284,11 +320,15 @@ final class SleepCapture {
     }
 
     func isActive() -> Bool {
-        queue.sync { active }
+        // Called from the JS/bridge thread. Calling from `queue` would
+        // deadlock — assert so a future refactor trips in development.
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync { active }
     }
 
     func statsJson() -> String {
-        queue.sync {
+        dispatchPrecondition(condition: .notOnQueue(queue))
+        return queue.sync {
             let dict: [String: Any] = [
                 "active": active,
                 "state": state.rawValue,
@@ -312,6 +352,7 @@ final class SleepCapture {
                 "lastEpisodeAtMs": lastEpisodeAtMs,
                 "endReason": endReason,
                 "configVersion": config.configVersion,
+                "configParseFailed": config.parseFailed,
             ]
             return Self.jsonString(dict)
         }
@@ -461,18 +502,22 @@ final class SleepCapture {
 
     private func startVad() {
         let startProb = Float(vadStartProbability)
+        // Generation-gate every deferred completion: model init can outlive a
+        // quick stop→start cycle (first-run download), and cancel() alone does
+        // not interrupt it (round-1 review #1).
+        let generation = sessionGeneration
         vadInitTask = Task { [weak self] in
             do {
                 let manager = try await VadManager(config: VadConfig(threshold: startProb))
                 self?.queue.async {
-                    guard let self, self.active else { return }
+                    guard let self, self.active, self.sessionGeneration == generation else { return }
                     self.vadManager = manager
                     self.vadReady = true
                     self.log?("😴 [SC] Tier 1 VAD ready")
                 }
             } catch {
                 self?.queue.async {
-                    guard let self else { return }
+                    guard let self, self.sessionGeneration == generation else { return }
                     self.vadReady = false
                     self.log?("⚠️ [SC] Tier 1 VAD unavailable (\(error.localizedDescription)) — running Tier-0-only")
                 }
@@ -494,22 +539,20 @@ final class SleepCapture {
                     self.queue.async { self.log?("⚠️ [SC] VAD chunk failed: \(error.localizedDescription)") }
                     continue
                 }
-                self.queue.async { self.handleVadProbability(probability) }
+                self.queue.async { self.handleVadProbability(probability, generation: generation) }
             }
         }
     }
 
-    private func handleVadProbability(_ probability: Double) {
-        guard active else { return }
+    private func handleVadProbability(_ probability: Double, generation: UInt64) {
+        guard active, sessionGeneration == generation else { return }
         if state == .recording || state == .pendingClose {
             episodeVadConfidence = max(episodeVadConfidence, probability)
         }
         if probability >= config.vadContinueProbability {
             lastVoiceAt = Date()
             if state == .pendingClose {
-                // Merge: a restart inside the merge window continues the clip.
-                state = .recording
-                pendingCloseDeadline = .distantFuture
+                mergeIntoOpenEpisode()
             }
         }
         if state == .idle, tier0Open, probability >= vadStartProbability {
@@ -606,8 +649,25 @@ final class SleepCapture {
             int16Samples[i] = Int16(v * 32767.0)
         }
         appendToPreRoll(int16Samples)
-        if state == .recording || state == .pendingClose {
+        if state == .recording {
             appendToEpisode(int16Samples)
+        } else if state == .pendingClose {
+            let cap = Int((config.mergeWindowSec + 1.0) * 16000.0)
+            if pendingTail.count < cap {
+                pendingTail.append(contentsOf: int16Samples)
+            }
+        }
+    }
+
+    /// A restart inside the merge window continues the same clip: flush the
+    /// buffered gap audio first so the merged clip stays continuous.
+    private func mergeIntoOpenEpisode() {
+        state = .recording
+        pendingCloseDeadline = .distantFuture
+        if !pendingTail.isEmpty {
+            let tail = pendingTail
+            pendingTail.removeAll(keepingCapacity: true)
+            appendToEpisode(tail)
         }
     }
 
@@ -660,8 +720,7 @@ final class SleepCapture {
         if tier0Open, !vadReady || vadSuspended {
             lastVoiceAt = Date()
             if state == .pendingClose {
-                state = .recording
-                pendingCloseDeadline = .distantFuture
+                mergeIntoOpenEpisode()
             }
         }
     }
@@ -781,6 +840,7 @@ final class SleepCapture {
         }
         do {
             try file.write(from: buffer)
+            consecutiveWriteFailures = 0
             episodeFramesWritten += Int64(samples.count)
             if Double(episodeFramesWritten) / 16000.0 >= config.maxClipSec {
                 // Hard cut (doc 08). A new episode may immediately restart.
@@ -826,6 +886,7 @@ final class SleepCapture {
         lastEpisodeAtMs = endMs
         state = (state == .suspended) ? .suspended : .idle
         pendingCloseDeadline = .distantFuture
+        pendingTail.removeAll(keepingCapacity: true)
 
         let episode: [String: Any] = [
             "id": episodeId,
@@ -857,13 +918,21 @@ final class SleepCapture {
     }
 
     private func handleWriteFailure() {
-        // Distinguish a full disk from a transient error: below a hard floor,
+        // Distinguish a full disk from other I/O faults: below a hard floor,
         // stop cleanly with the doc-08 end reason.
         if let dir = outputDir,
            let values = try? dir.resourceValues(forKeys: [.volumeAvailableCapacityForImportantUsageKey]),
            let free = values.volumeAvailableCapacityForImportantUsage,
            Double(free) / (1024 * 1024) < 50 {
             stopInternal(reason: "disk_full")
+            return
+        }
+        // A persistent non-disk fault (permissions, encoder rejection the
+        // fallback can't satisfy) must not retry silently all night.
+        consecutiveWriteFailures += 1
+        if consecutiveWriteFailures >= 5 {
+            log?("❌ [SC] \(consecutiveWriteFailures) consecutive clip I/O failures — stopping session")
+            stopInternal(reason: "io_error")
         }
     }
 
@@ -986,15 +1055,23 @@ final class SleepCapture {
                 openGapStartMs = nil
                 openGapCause = ""
             }
+            consecutiveRebuildFailures = 0
+            rebuildBackoffUntil = .distantPast
             log?("😴🔁 [SC] engine rebuilt (\(cause)) — capture resumed")
         } catch {
-            // Stay suspended; the watchdog retries every interval.
+            // Stay suspended and keep retrying all night (recovering after a
+            // long mic seizure IS the feature), but back off exponentially to
+            // a 5-minute ceiling so an unattended session doesn't burn battery
+            // hammering a mic another process holds.
             if openGapStartMs == nil {
                 openGapStartMs = Self.nowMs()
                 openGapCause = cause
             }
             state = .suspended
-            log?("❌ [SC] rebuild failed (\(cause)): \(error.localizedDescription) — watchdog will retry")
+            consecutiveRebuildFailures += 1
+            let backoffSec = min(300.0, config.watchdogIntervalSec * pow(2.0, Double(min(consecutiveRebuildFailures - 1, 4))))
+            rebuildBackoffUntil = Date().addingTimeInterval(backoffSec)
+            log?("❌ [SC] rebuild failed (\(cause), attempt \(consecutiveRebuildFailures)): \(error.localizedDescription) — next retry in \(Int(backoffSec))s")
         }
     }
 
@@ -1007,11 +1084,12 @@ final class SleepCapture {
         let healthy = callbacksAdvanced && sawNonZeroSinceCheck && state != .suspended
         sawNonZeroSinceCheck = false
         if !healthy {
-            log?("🐕 [SC] watchdog: unhealthy (callbacks=\(callbacksAdvanced), state=\(state.rawValue)) — rebuilding")
             if openGapStartMs == nil {
                 openGapStartMs = Self.nowMs()
                 openGapCause = "watchdog"
             }
+            guard Date() >= rebuildBackoffUntil else { return }
+            log?("🐕 [SC] watchdog: unhealthy (callbacks=\(callbacksAdvanced), state=\(state.rawValue)) — rebuilding")
             attemptRebuild(cause: "watchdog")
         }
     }
