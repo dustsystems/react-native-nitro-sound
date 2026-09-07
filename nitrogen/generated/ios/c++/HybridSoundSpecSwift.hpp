@@ -502,6 +502,44 @@ namespace margelo::nitro::sound {
         std::rethrow_exception(__result.error());
       }
     }
+    inline std::shared_ptr<Promise<void>> startSleepCapture(const std::string& configJson) override {
+      auto __result = _swiftPart.startSleepCapture(configJson);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<std::string>> stopSleepCapture() override {
+      auto __result = _swiftPart.stopSleepCapture();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline bool isSleepCaptureActive() override {
+      auto __result = _swiftPart.isSleepCaptureActive();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline void setSleepEpisodeCallback(const std::function<void(const std::string& /* episodeJson */)>& callback) override {
+      auto __result = _swiftPart.setSleepEpisodeCallback(callback);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline std::string getSleepCaptureStats() override {
+      auto __result = _swiftPart.getSleepCaptureStats();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
 
   private:
     NitroSound::HybridSoundSpec_cxx _swiftPart;

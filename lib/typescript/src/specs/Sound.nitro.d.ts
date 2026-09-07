@@ -218,5 +218,34 @@ export interface Sound extends HybridObject<{
     /** Error callback: (code, message). Codes: 'unsupported' | 'assets-missing' | 'audio-engine' | 'analyzer'. */
     setLiveTranscriptionErrorCallback(callback: (code: string, message: string) => void): void;
     removeLiveTranscriptionErrorCallback(): void;
+    /**
+     * Arm overnight sleep-talking capture. Must be called while the app is
+     * foregrounded (iOS forbids starting recording from the background).
+     * Rejects if capture is already active, the mic permission is missing,
+     * or free disk is below the preflight floor.
+     */
+    startSleepCapture(configJson: string): Promise<void>;
+    /**
+     * Disarm capture. Finalizes any in-flight clip first, then resolves with
+     * a session summary JSON: { id, startedAtMs, endedAtMs, endReason,
+     * episodeCount, totalEncodedSec, tier0Wakes, tier1Starts, gapIntervals,
+     * noisyNight, configVersion }. Safe to call when not active (summary of
+     * the last session, or an empty summary if none ran).
+     */
+    stopSleepCapture(): Promise<string>;
+    /** Whether the overnight capture engine is currently armed. */
+    isSleepCaptureActive(): boolean;
+    /**
+     * Register the per-episode callback. Fires through the night as each clip
+     * closes (episode JSON above). Set BEFORE startSleepCapture.
+     */
+    setSleepEpisodeCallback(callback: (episodeJson: string) => void): void;
+    /**
+     * Live stats JSON for the debug UI: { active, state, noiseFloorDb,
+     * lastRmsDb, effectiveMarginDb, tier0Open, guarded, vadReady,
+     * vadSuspended, thermalState, episodeCount, tier0Wakes, tier1Starts,
+     * totalEncodedSec, noisyNight, gapCount, uptimeSec, endReason }.
+     */
+    getSleepCaptureStats(): string;
 }
 //# sourceMappingURL=Sound.nitro.d.ts.map

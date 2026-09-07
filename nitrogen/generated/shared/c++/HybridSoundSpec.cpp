@@ -73,6 +73,11 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("removeLiveTranscriptionResultCallback", &HybridSoundSpec::removeLiveTranscriptionResultCallback);
       prototype.registerHybridMethod("setLiveTranscriptionErrorCallback", &HybridSoundSpec::setLiveTranscriptionErrorCallback);
       prototype.registerHybridMethod("removeLiveTranscriptionErrorCallback", &HybridSoundSpec::removeLiveTranscriptionErrorCallback);
+      prototype.registerHybridMethod("startSleepCapture", &HybridSoundSpec::startSleepCapture);
+      prototype.registerHybridMethod("stopSleepCapture", &HybridSoundSpec::stopSleepCapture);
+      prototype.registerHybridMethod("isSleepCaptureActive", &HybridSoundSpec::isSleepCaptureActive);
+      prototype.registerHybridMethod("setSleepEpisodeCallback", &HybridSoundSpec::setSleepEpisodeCallback);
+      prototype.registerHybridMethod("getSleepCaptureStats", &HybridSoundSpec::getSleepCaptureStats);
     });
   }
 

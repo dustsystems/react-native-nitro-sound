@@ -132,6 +132,37 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var processingTimer: DispatchSourceTimer?
     private var isRecordingSession: Bool = false
 
+    // MARK: - Sleep-Capture Tap Fan-Out (third consumer of the ONE input tap)
+    // Sleep-talking capture consumes the same persistent input tap as dream
+    // recording and voice commands — never a second AVAudioEngine (see
+    // docs/architecture/audio/investigations/voice-command-audio-engine-conflict.md).
+    /// RT-read armed flag (C11 atomic — the tap callback must not take Swift
+    /// locks). Non-zero while SleepCapture wants tap buffers; cost when
+    /// disarmed is one relaxed load + branch.
+    private let sleepCaptureFanOutArmed: OpaquePointer = spsc_atomic_i64_create(0)!
+    /// Whether the persistent input tap is currently installed on the engine's
+    /// input node (by any owner). Maintained at every install/remove site.
+    private var isInputTapInstalled: Bool = false
+    /// True while the recorder path (startRecorder → installTap) owns the tap.
+    /// Sleep-capture disarm may only remove the tap when this is false — the
+    /// recorder installs the tap at Start Journey and expects it to survive
+    /// until stopRecorder/endEngineSession even while no segment is recording.
+    private var tapOwnedByRecorder: Bool = false
+    /// Serializes every tap install/remove decision and the two ownership
+    /// flags above. Recorder start/stop run on global queues while sleep
+    /// capture arms/disarms from its own serial queue — without this, a
+    /// concurrent stopRecorder could remove the tap in the window between
+    /// capture's ensure and its arm (review round 1 #3). Leaf-only: blocks on
+    /// this queue never dispatch sync onto any other queue (bridgedLog is
+    /// async-to-main).
+    private let tapControlQueue = DispatchQueue(label: "com.hypnos.tapControl")
+    /// True when sleep capture's ensure hook is the party that STARTED the
+    /// engine (alarm-only nights: nothing else would have). Cleared on the
+    /// sleep-capture release below and on endEngineSession. Guards the
+    /// disarm-time engine release so capture never stops an engine someone
+    /// else started.
+    private var engineStartedForSleepCapture = false
+
     // Pre-allocated conversion buffer for worker (reused every chunk)
     private var workerConversionBuffer: AVAudioPCMBuffer?
     private var workerInputFormat: AVAudioFormat?  // 48kHz format from hardware
@@ -666,9 +697,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let inputNode = engine.inputNode
             let hwFormat = inputNode.outputFormat(forBus: 0)
 
-            // Remove any existing taps
-            inputNode.removeTap(onBus: 0)
-
             // Set default output directory if needed
             if outputDirectory == nil {
                 let documentsURL = FileManager.default.urls(for: .documentDirectory, in: .userDomainMask)[0]
@@ -704,11 +732,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // Install tap - RT-SAFE: copy-only, no processing, NO LOGGING
             // (Logging from RT audio thread can cause glitches via memory allocation & GCD locks)
-            // Only RT-safe operations: increment counter + buffer write
-            inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat) { [weak self] buffer, time in
-                guard let self = self, let spsc = self.spscBuffer else { return }
-                self.tapCallbackCounter += 1  // RT-safe: simple int increment
-                _ = spsc.write(buffer)
+            // Only RT-safe operations: increment counter + buffer writes.
+            // Remove-then-install under tapControlQueue: any existing tap
+            // (a previous recorder tap, or one sleep capture's keep-alive
+            // installed) is replaced atomically with the same shared block.
+            tapControlQueue.sync {
+                inputNode.removeTap(onBus: 0)
+                inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat, block: makeInputTapBlock())
+                isInputTapInstalled = true
+                tapOwnedByRecorder = true
             }
 
             // Start tap monitor timer - logs every 5 seconds to confirm tap is receiving data
@@ -725,6 +757,28 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         } catch {
             bridgedLog("❌ installTap failed: \(error.localizedDescription)")
             promise.reject(withError: RuntimeError.error(withMessage: "Tap installation failed: \(error.localizedDescription)"))
+        }
+    }
+
+    /// The ONE input-tap callback, shared by every install site. RT-SAFE:
+    /// copy-only, no allocation, no locks, no logging.
+    /// Fan-out order: recorder/voice-command SPSC ring first (worker drains it),
+    /// then sleep capture's own SPSC ring when armed. Each consumer that is
+    /// inactive costs a single branch.
+    private func makeInputTapBlock() -> (AVAudioPCMBuffer, AVAudioTime) -> Void {
+        return { [weak self] buffer, _ in
+            guard let self = self else { return }
+            self.tapCallbackCounter += 1  // RT-safe: simple int increment
+            if let spsc = self.spscBuffer {
+                _ = spsc.write(buffer)
+            }
+            // Acquire load pairs with the release store in
+            // setSleepCaptureFanOutArmed, so an RT thread that observes
+            // armed==1 also observes SleepCapture's freshly-reset SPSC ring
+            // (review round 1 #4). ldar on arm64 — still RT-safe.
+            if spsc_load_acquire_i64(self.sleepCaptureFanOutArmed) != 0 {
+                SleepCapture.shared.ingestTapBuffer(buffer)
+            }
         }
     }
 
@@ -847,15 +901,32 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             //     self.stopVADMonitoring()
             // }
 
-            // Remove tap from unified engine's input node
-            if let engine = self.audioEngine {
-                engine.inputNode.removeTap(onBus: 0)
-                self.stopTapMonitor()
-                self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED - mic indicator should disappear if tap was the cause")
+            // Remove tap from unified engine's input node — UNLESS sleep capture
+            // is still armed and consuming it (keep-alive: the recorder gives up
+            // ownership, capture's disarm removes the tap once IT is done too).
+            // Serialized with capture's arm/disarm via tapControlQueue.
+            self.tapControlQueue.sync {
+                if let engine = self.audioEngine {
+                    if spsc_load_acquire_i64(self.sleepCaptureFanOutArmed) != 0 {
+                        self.tapOwnedByRecorder = false
+                        self.bridgedLog("🎙️🟡 RECORDING TAP RETAINED - sleep capture still consuming it")
+                        // Deliberately NOT nil-ing spscBuffer here: the live tap
+                        // callback still reads it, and a Swift strong-ref store is
+                        // not safe against a concurrent RT read. The ring just fills
+                        // and rejects writes (cheap); the next startRecorder resets it.
+                    } else {
+                        engine.inputNode.removeTap(onBus: 0)
+                        self.isInputTapInstalled = false
+                        self.tapOwnedByRecorder = false
+                        self.stopTapMonitor()
+                        self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED - mic indicator should disappear if tap was the cause")
+                        // Clean up SPSC buffer (only when the tap is actually gone).
+                        self.spscBuffer = nil
+                    }
+                } else {
+                    self.spscBuffer = nil
+                }
             }
-
-            // Clean up SPSC buffer
-            self.spscBuffer = nil
 
             // DISABLED: Clean up VAD resources
             // self.vadManager = nil
@@ -932,14 +1003,23 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.audioPlayerNodeC?.stop()
             self.audioPlayerNodeD?.stop()
 
-            // Step 3: Remove microphone tap
-            if let engine = self.audioEngine {
-                engine.inputNode.removeTap(onBus: 0)
-                self.stopTapMonitor()
-                self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED (endEngineSession)")
+            // Step 3: Remove microphone tap. Deliberately unconditional — this
+            // is the full-teardown path and its semantics are unchanged. If
+            // sleep capture is still armed, its 30 s watchdog notices the
+            // silent tap and re-arms engine+tap via its ensure hook; if the JS
+            // layer stopped capture first (the normal order), nothing revives.
+            self.tapControlQueue.sync {
+                if let engine = self.audioEngine {
+                    engine.inputNode.removeTap(onBus: 0)
+                    self.isInputTapInstalled = false
+                    self.tapOwnedByRecorder = false
+                    self.stopTapMonitor()
+                    self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED (endEngineSession)")
+                }
             }
 
             // Step 4: Stop the audio engine
+            self.engineStartedForSleepCapture = false
             if let engine = self.audioEngine, engine.isRunning {
                 engine.stop()
                 self.bridgedLog("🔴 AUDIO ENGINE STOPPED")
@@ -999,6 +1079,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
      * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
      */
     public func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void> {
+        // A dream dictation is a deliberate act — sleep capture pauses for its
+        // duration so the dictation can't be filed as sleep-talking clips.
+        SleepCapture.shared.pauseForDreamRecording()
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -1070,6 +1153,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
      * If no recording is active, this is a no-op.
      */
     public func endRecording() throws -> Promise<Void> {
+        SleepCapture.shared.resumeAfterDreamRecording()
         let promise = Promise<Void>()
 
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
@@ -3077,6 +3161,164 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return created
     }
 
+    // MARK: - Sleep-Talking Capture (forwarders + engine keep-alive; detection
+    // pipeline lives in SleepCapture.swift, fed from THIS engine's input tap)
+
+    /// KEEP-ALIVE RULE (sleep capture ↔ the one engine):
+    /// - ARM ensures the ONE engine is running with the persistent input tap
+    ///   installed, even when nothing plays (alarm-only nights play no audio
+    ///   until the 7am alarm, so nothing else would have started it).
+    /// - DISARM releases ONLY what nothing else needs: the tap is removed iff
+    ///   the recorder path doesn't own it and command recognition isn't
+    ///   running. The engine itself is never stopped by sleep capture — it
+    ///   stops exactly where it always did (endEngineSession), so no existing
+    ///   caller's stop semantics change.
+    fileprivate func ensureEngineAndTapForSleepCapture() throws -> AVAudioFormat {
+        try setupAudioEngine()  // no-op when already initialized (lock-guarded)
+        guard let engine = audioEngine else {
+            throw RuntimeError.error(withMessage: "Audio engine unavailable for sleep capture")
+        }
+        if !engine.isRunning {
+            // The shared session may be inactive (post-endEngineSession
+            // revival, interruption). Re-activate before starting; category/
+            // mode/options/input-pin were set by setupAudioEngine and persist
+            // on the shared session — never reconfigured here.
+            do {
+                try AVAudioSession.sharedInstance().setActive(true)
+            } catch {
+                // Not fatal on its own — engine.start() below is the real
+                // gate — but log it so overnight failures distinguish
+                // session-activation faults from engine-start faults.
+                bridgedLog("⚠️ Session activation for sleep capture failed: \(error.localizedDescription)")
+            }
+            try engine.start()
+            engineStartedForSleepCapture = true
+            bridgedLog("😴 Engine started for sleep capture keep-alive")
+        }
+        let hwFormat = engine.inputNode.outputFormat(forBus: 0)
+        guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+            throw RuntimeError.error(withMessage: "Audio input unavailable (format \(hwFormat))")
+        }
+        tapControlQueue.sync {
+            if !isInputTapInstalled {
+                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat, block: makeInputTapBlock())
+                isInputTapInstalled = true
+                bridgedLog("🎙️🟠 TAP INSTALLED (sleep capture keep-alive)")
+            }
+        }
+        return hwFormat
+    }
+
+    /// Arms/disarms the RT fan-out flag; on disarm, releases the tap if no
+    /// other consumer needs it (see the keep-alive rule above). Serialized on
+    /// tapControlQueue against the recorder's install/remove sites; the arm
+    /// path re-checks the tap under the lock so a stopRecorder that removed it
+    /// in the ensure→arm window can't leave capture armed against no tap.
+    fileprivate func setSleepCaptureFanOutArmed(_ armed: Bool) {
+        defer { if !armed { releaseEngineAfterSleepCaptureIfIdle() } }
+        tapControlQueue.sync {
+            spsc_store_release_i64(sleepCaptureFanOutArmed, armed ? 1 : 0)
+            if armed {
+                if !isInputTapInstalled, let engine = audioEngine {
+                    let hw = engine.inputNode.outputFormat(forBus: 0)
+                    if hw.sampleRate > 0, hw.channelCount > 0 {
+                        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hw, block: makeInputTapBlock())
+                        isInputTapInstalled = true
+                        bridgedLog("🎙️🟠 TAP REINSTALLED at arm (was removed in the ensure→arm window)")
+                    }
+                }
+            } else if isInputTapInstalled, !tapOwnedByRecorder, !isCommandRecognitionActive {
+                audioEngine?.inputNode.removeTap(onBus: 0)
+                isInputTapInstalled = false
+                stopTapMonitor()
+                bridgedLog("🎙️⚪ SLEEP-CAPTURE TAP REMOVED (disarm, no other consumer)")
+            }
+        }
+    }
+
+    /// Disarm-time engine release: when sleep capture started the engine for
+    /// its own keep-alive and NOTHING else is using audio, wind the engine and
+    /// session down exactly like endEngineSession does — otherwise the idle
+    /// running engine keeps holding the audio session and every daytime
+    /// expo-audio player fails with "insufficient priority" (observed
+    /// on-device 2026-08-25 after stopping a test capture).
+    private func releaseEngineAfterSleepCaptureIfIdle() {
+        guard engineStartedForSleepCapture else { return }
+        let othersActive = tapControlQueue.sync { tapOwnedByRecorder }
+            || isCommandRecognitionActive
+            || isRecordingSession
+            || currentPlayerNode?.isPlaying == true
+            || isAmbientLoopPlaying
+        guard !othersActive else { return }
+        engineStartedForSleepCapture = false
+        if let engine = audioEngine, engine.isRunning {
+            engine.stop()
+            bridgedLog("🔴 AUDIO ENGINE STOPPED (sleep-capture release)")
+        }
+        do {
+            try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        } catch {
+            bridgedLog("⚠️ Session deactivation after sleep-capture release failed: \(error.localizedDescription)")
+        }
+        // Same end state as endEngineSession so the next audio user
+        // re-initializes from scratch.
+        audioEngine = nil
+        audioPlayerNodeA = nil
+        audioPlayerNodeB = nil
+        audioPlayerNodeC = nil
+        audioPlayerNodeD = nil
+        currentPlayerNode = nil
+        audioEngineInitialized = false
+        bridgedLog("😴🔚 [SC] engine released after sleep-capture disarm (no other consumers)")
+    }
+
+    public func startSleepCapture(configJson: String) throws -> Promise<Void> {
+        let promise = Promise<Void>()
+        SleepCapture.shared.log = { [weak self] message in self?.bridgedLog(message) }
+        // Guarded mode / ownAudioOverlap: reads existing playback state only.
+        SleepCapture.shared.ownAudioActiveProvider = { [weak self] in
+            guard let self else { return false }
+            return self.currentPlayerNode?.isPlaying == true || self.isAmbientLoopPlaying
+        }
+        // Single-engine hooks: SleepCapture consumes THIS engine's input tap
+        // as a third fan-out consumer — it owns no AVAudioEngine of its own.
+        SleepCapture.shared.ensureSharedEngineTap = { [weak self] in
+            guard let self else {
+                throw RuntimeError.error(withMessage: "Sound instance released")
+            }
+            return try self.ensureEngineAndTapForSleepCapture()
+        }
+        SleepCapture.shared.setTapFanOutArmed = { [weak self] armed in
+            self?.setSleepCaptureFanOutArmed(armed)
+        }
+        SleepCapture.shared.start(configJson: configJson) { error in
+            if let error {
+                promise.reject(withError: RuntimeError.error(withMessage: error.localizedDescription))
+            } else {
+                promise.resolve(withResult: ())
+            }
+        }
+        return promise
+    }
+
+    public func stopSleepCapture() throws -> Promise<String> {
+        let promise = Promise<String>()
+        SleepCapture.shared.stop { summaryJson in promise.resolve(withResult: summaryJson) }
+        return promise
+    }
+
+    public func isSleepCaptureActive() throws -> Bool {
+        return SleepCapture.shared.isActive()
+    }
+
+    public func setSleepEpisodeCallback(callback: @escaping (_ episodeJson: String) -> Void) throws {
+        SleepCapture.shared.episodeCallback = callback
+    }
+
+    public func getSleepCaptureStats() throws -> String {
+        return SleepCapture.shared.statsJson()
+    }
+
     // MARK: - Crossfade Methods
     public func crossfadeTo(uri: String, duration: Double? = 3.0, targetVolume: Double? = 1.0) throws -> Promise<String> {
         let promise = Promise<String>()
@@ -3658,6 +3900,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             stopTapMonitor()
             // Don't stop the engine here as it might be used by other instances
         }
+        // Destroy the fan-out atomic LAST — after the tap is removed, so no
+        // RT callback can still be reading it (review round 1 #1). (A callback
+        // in flight also holds a strong self, deferring this deinit anyway.)
+        spsc_atomic_i64_destroy(sleepCaptureFanOutArmed)
         // No callback to clear - using event emitting
     }
 
