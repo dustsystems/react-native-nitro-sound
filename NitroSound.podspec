@@ -24,6 +24,7 @@ Pod::Spec.new do |s|
   # Public headers exposed to Swift via module
   s.public_header_files = [
     "ios/SPSCAtomic.h",
+    "ios/ObjCExceptionCatcher.h",
   ]
 
   s.exclude_files = [
@@ -44,6 +45,11 @@ Pod::Spec.new do |s|
     "GCC_PREPROCESSOR_DEFINITIONS" => "$(inherited) FOLLY_NO_CONFIG FOLLY_MOBILE=1 FOLLY_USE_LIBCPP=1 FOLLY_CFG_NO_COROUTINES",
     "OTHER_CPLUSPLUSFLAGS" => "$(inherited) #{folly_compiler_flags}",
     "PRODUCT_MODULE_NAME" => "NitroSound",
+    # DUS-1714: ObjCExceptionCatcher.m's @try/@catch(NSException*) needs this explicitly — a
+    # CocoaPods-generated pod target does not inherit Xcode's IDE-template default of YES, and
+    # without it an NSException raised under @try traps (EXC_BREAKPOINT) instead of being
+    # caught, reproduced live on-device/sim while building this fix.
+    "CLANG_ENABLE_OBJC_EXCEPTIONS" => "YES",
   }
 
   s.dependency 'React-Core'

@@ -327,6 +327,28 @@ namespace margelo::nitro::sound::bridge::swift {
     return Func_void_PlaybackEndType_Wrapper(std::move(value));
   }
   
+  // pragma MARK: std::function<void(const std::string& /* event */, const std::string& /* detail */)>
+  /**
+   * Specialized version of `std::function<void(const std::string&, const std::string&)>`.
+   */
+  using Func_void_std__string_std__string = std::function<void(const std::string& /* event */, const std::string& /* detail */)>;
+  /**
+   * Wrapper class for a `std::function<void(const std::string& / * event * /, const std::string& / * detail * /)>`, this can be used from Swift.
+   */
+  class Func_void_std__string_std__string_Wrapper final {
+  public:
+    explicit Func_void_std__string_std__string_Wrapper(std::function<void(const std::string& /* event */, const std::string& /* detail */)>&& func): _function(std::make_unique<std::function<void(const std::string& /* event */, const std::string& /* detail */)>>(std::move(func))) {}
+    inline void call(std::string event, std::string detail) const noexcept {
+      _function->operator()(event, detail);
+    }
+  private:
+    std::unique_ptr<std::function<void(const std::string& /* event */, const std::string& /* detail */)>> _function;
+  } SWIFT_NONCOPYABLE;
+  Func_void_std__string_std__string create_Func_void_std__string_std__string(void* _Nonnull swiftClosureWrapper) noexcept;
+  inline Func_void_std__string_std__string_Wrapper wrap_Func_void_std__string_std__string(Func_void_std__string_std__string value) noexcept {
+    return Func_void_std__string_std__string_Wrapper(std::move(value));
+  }
+  
   // pragma MARK: std::function<void(const std::string& /* filename */, const std::string& /* filePath */, bool /* isManual */, double /* duration */)>
   /**
    * Specialized version of `std::function<void(const std::string&, const std::string&, bool, double)>`.
@@ -380,28 +402,6 @@ namespace margelo::nitro::sound::bridge::swift {
   Func_void_std__string_bool create_Func_void_std__string_bool(void* _Nonnull swiftClosureWrapper) noexcept;
   inline Func_void_std__string_bool_Wrapper wrap_Func_void_std__string_bool(Func_void_std__string_bool value) noexcept {
     return Func_void_std__string_bool_Wrapper(std::move(value));
-  }
-  
-  // pragma MARK: std::function<void(const std::string& /* code */, const std::string& /* message */)>
-  /**
-   * Specialized version of `std::function<void(const std::string&, const std::string&)>`.
-   */
-  using Func_void_std__string_std__string = std::function<void(const std::string& /* code */, const std::string& /* message */)>;
-  /**
-   * Wrapper class for a `std::function<void(const std::string& / * code * /, const std::string& / * message * /)>`, this can be used from Swift.
-   */
-  class Func_void_std__string_std__string_Wrapper final {
-  public:
-    explicit Func_void_std__string_std__string_Wrapper(std::function<void(const std::string& /* code */, const std::string& /* message */)>&& func): _function(std::make_unique<std::function<void(const std::string& /* code */, const std::string& /* message */)>>(std::move(func))) {}
-    inline void call(std::string code, std::string message) const noexcept {
-      _function->operator()(code, message);
-    }
-  private:
-    std::unique_ptr<std::function<void(const std::string& /* code */, const std::string& /* message */)>> _function;
-  } SWIFT_NONCOPYABLE;
-  Func_void_std__string_std__string create_Func_void_std__string_std__string(void* _Nonnull swiftClosureWrapper) noexcept;
-  inline Func_void_std__string_std__string_Wrapper wrap_Func_void_std__string_std__string(Func_void_std__string_std__string value) noexcept {
-    return Func_void_std__string_std__string_Wrapper(std::move(value));
   }
   
   // pragma MARK: std::shared_ptr<HybridSoundSpec>

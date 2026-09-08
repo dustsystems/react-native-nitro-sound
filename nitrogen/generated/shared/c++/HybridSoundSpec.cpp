@@ -41,6 +41,8 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("addPlaybackEndListener", &HybridSoundSpec::addPlaybackEndListener);
       prototype.registerHybridMethod("removePlaybackEndListener", &HybridSoundSpec::removePlaybackEndListener);
       prototype.registerHybridMethod("setLogCallback", &HybridSoundSpec::setLogCallback);
+      prototype.registerHybridMethod("setEngineEventCallback", &HybridSoundSpec::setEngineEventCallback);
+      prototype.registerHybridMethod("removeEngineEventCallback", &HybridSoundSpec::removeEngineEventCallback);
       prototype.registerHybridMethod("setSegmentCallback", &HybridSoundSpec::setSegmentCallback);
       prototype.registerHybridMethod("setNextTrackCallback", &HybridSoundSpec::setNextTrackCallback);
       prototype.registerHybridMethod("removeNextTrackCallback", &HybridSoundSpec::removeNextTrackCallback);

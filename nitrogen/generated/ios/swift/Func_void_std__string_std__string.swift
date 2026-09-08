@@ -8,21 +8,21 @@
 import NitroModules
 
 /**
- * Wraps a Swift `(_ code: String, _ message: String) -> Void` as a class.
+ * Wraps a Swift `(_ event: String, _ detail: String) -> Void` as a class.
  * This class can be used from C++, e.g. to wrap the Swift closure as a `std::function`.
  */
 public final class Func_void_std__string_std__string {
   public typealias bridge = margelo.nitro.sound.bridge.swift
 
-  private let closure: (_ code: String, _ message: String) -> Void
+  private let closure: (_ event: String, _ detail: String) -> Void
 
-  public init(_ closure: @escaping (_ code: String, _ message: String) -> Void) {
+  public init(_ closure: @escaping (_ event: String, _ detail: String) -> Void) {
     self.closure = closure
   }
 
   @inline(__always)
-  public func call(code: std.string, message: std.string) -> Void {
-    self.closure(String(code), String(message))
+  public func call(event: std.string, detail: std.string) -> Void {
+    self.closure(String(event), String(detail))
   }
 
   /**
