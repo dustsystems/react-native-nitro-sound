@@ -345,7 +345,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         do {
             try engine.start()
             audioEngineInitialized = true
-            engineControlQueue.sync { engineGeneration += 1 }
+            // A fresh engine has a fresh graph — any stale failure flag from a torn-down
+            // engine must not leak forward (review finding, DUS-1714).
+            engineControlQueue.sync { engineGeneration += 1; engineRecoveryFailed = false }
 
             // Log hardware sample rate
             let inputFormat = engine.inputNode.outputFormat(forBus: 0)
@@ -372,12 +374,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// engineControlQueue (see the precondition below) — today the only caller is startPlayer's
     /// diagnostic branch, which runs on DispatchQueue.global (DUS-1714).
     private func ensureEngineRunning() throws {
+        dispatchPrecondition(condition: .notOnQueue(engineControlQueue))
         guard let engine = audioEngine else {
             throw RuntimeError.error(withMessage: "Audio engine not initialized")
         }
 
-        if engineRecoveryFailed {
-            dispatchPrecondition(condition: .notOnQueue(engineControlQueue))
+        // Attempt the guarded reconnect whenever the engine isn't running — not only on a
+        // *repeat* failure. The common case (a route change stopped it and recovery hasn't run
+        // yet) must go through recoverEngineLocked too, or it falls straight through to the
+        // bare restartAudioEngine() below and never re-stamps the graph (review finding,
+        // DUS-1714). recoverEngineLocked itself no-ops if the engine turns out to already be
+        // running by the time it's dequeued.
+        if engineRecoveryFailed || !engine.isRunning {
             engineControlQueue.sync { self.recoverEngineLocked(generation: self.engineGeneration) }
         }
 
@@ -408,8 +416,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("   ↳ recovery skip: engine not initialized")
             return
         }
-        guard !engine.isRunning else {
-            bridgedLog("   ↳ recovery skip: engine already running")
+        // A prior attempt that failed mid-reconnect can leave the engine running again (started
+        // by some other path, e.g. the sleep-capture keep-alive) with a still-dangling player
+        // node — engineRecoveryFailed being true is the signal that "running" doesn't mean
+        // "healthy" here, so the repair must run anyway (review finding, DUS-1714).
+        // ObjCExceptionCatcher.reconnectPlayers stops the engine first when needed.
+        guard !engine.isRunning || engineRecoveryFailed else {
+            bridgedLog("   ↳ recovery skip: engine already running, no known failure")
             return
         }
         guard engine.inputNode.outputFormat(forBus: 0).sampleRate > 0 else {
@@ -683,12 +696,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("╚════════════════════════════════════════════════════════════════╝")
             logStateSnapshot(context: "interruption-ended")
 
-            // Attempt engine restart if shouldResume is true
-            if let engine = audioEngine, audioEngineInitialized && !engine.isRunning {
+            // Attempt engine restart if shouldResume is true. Routes through
+            // ensureEngineRunning() — the shared repair-or-start entry point (DUS-1714 review) —
+            // rather than a bare engine.start(), so a graph a prior route-change recovery left
+            // partially reconnected gets repaired here too, not just skipped.
+            if audioEngineInitialized, let engine = audioEngine, !engine.isRunning || engineRecoveryFailed {
                 if shouldResume {
-                    bridgedLog("🔄 shouldResume=true, attempting engine.start()...")
+                    bridgedLog("🔄 shouldResume=true, attempting ensureEngineRunning()...")
                     do {
-                        try engine.start()
+                        try ensureEngineRunning()
                         bridgedLog("✅ Engine restarted after interruption (running=\(engine.isRunning))")
                     } catch {
                         let ns = error as NSError
@@ -1133,6 +1149,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 self.audioPlayerNodeD = nil
                 self.audioEngineInitialized = false
                 self.engineGeneration += 1
+                self.engineRecoveryFailed = false
                 self.teardownInFlight = false
             }
 
@@ -3299,7 +3316,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         guard let engine = audioEngine else {
             throw RuntimeError.error(withMessage: "Audio engine unavailable for sleep capture")
         }
-        if !engine.isRunning {
+        if !engine.isRunning || engineRecoveryFailed {
             // The shared session may be inactive (post-endEngineSession
             // revival, interruption). Re-activate before starting; category/
             // mode/options/input-pin were set by setupAudioEngine and persist
@@ -3307,12 +3324,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             do {
                 try AVAudioSession.sharedInstance().setActive(true)
             } catch {
-                // Not fatal on its own — engine.start() below is the real
+                // Not fatal on its own — ensureEngineRunning() below is the real
                 // gate — but log it so overnight failures distinguish
                 // session-activation faults from engine-start faults.
                 bridgedLog("⚠️ Session activation for sleep capture failed: \(error.localizedDescription)")
             }
-            try engine.start()
+            // ensureEngineRunning() — the shared repair-or-start entry point (DUS-1714 review) —
+            // instead of a bare engine.start(): if a prior route-change recovery left the graph
+            // partially reconnected, this repairs it (stop, reconnect, start) rather than the
+            // watchdog just starting a still-broken graph and masking the failure until the
+            // next play silently does nothing.
+            try ensureEngineRunning()
             engineStartedForSleepCapture = true
             bridgedLog("😴 Engine started for sleep capture keep-alive")
         }
@@ -3396,6 +3418,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             currentPlayerNode = nil
             audioEngineInitialized = false
             engineGeneration += 1
+            engineRecoveryFailed = false
             teardownInFlight = false
             bridgedLog("😴🔚 [SC] engine released after sleep-capture disarm (no other consumers)")
         }

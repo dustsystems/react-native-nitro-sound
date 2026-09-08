@@ -15,9 +15,11 @@ NS_ASSUME_NONNULL_BEGIN
 /// Swift frames between the `@try` and the calls that can raise — which is what this does.
 @interface ObjCExceptionCatcher : NSObject
 
-/// Returns `YES` on success. On `NO`, `*error` is populated: either the `NSError` from
-/// `startAndReturnError:` (domain from AVFoundation), or one built from a caught `NSException`
-/// (domain `ObjCException`, `userInfo` carrying the exception's name and reason).
+/// Stops `engine` first if it's already running (safe to call either way — repairs a graph left
+/// dangling by a prior failed attempt just as well as a genuinely stopped engine), then
+/// reconnects and restarts. Returns `YES` on success. On `NO`, `*error` is populated: either the
+/// `NSError` from `startAndReturnError:` (domain from AVFoundation), or one built from a caught
+/// `NSException` (domain `ObjCException`, `userInfo` carrying the exception's name and reason).
 + (BOOL)reconnectPlayers:(NSArray<AVAudioPlayerNode *> *)players
                    engine:(AVAudioEngine *)engine
                     error:(NSError **)error NS_SWIFT_NAME(reconnectPlayers(_:engine:));
