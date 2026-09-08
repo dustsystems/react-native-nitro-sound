@@ -663,6 +663,33 @@ open class HybridSoundSpec_cxx {
   }
   
   @inline(__always)
+  public final func setEngineEventCallback(callback: bridge.Func_void_std__string_std__string) -> bridge.Result_void_ {
+    do {
+      try self.__implementation.setEngineEventCallback(callback: { () -> (String, String) -> Void in
+        let __wrappedFunction = bridge.wrap_Func_void_std__string_std__string(callback)
+        return { (__event: String, __detail: String) -> Void in
+          __wrappedFunction.call(std.string(__event), std.string(__detail))
+        }
+      }())
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
+  public final func removeEngineEventCallback() -> bridge.Result_void_ {
+    do {
+      try self.__implementation.removeEngineEventCallback()
+      return bridge.create_Result_void_()
+    } catch (let __error) {
+      let __exceptionPtr = __error.toCpp()
+      return bridge.create_Result_void_(__exceptionPtr)
+    }
+  }
+  
+  @inline(__always)
   public final func setSegmentCallback(callback: bridge.Func_void_std__string_std__string_bool_double) -> bridge.Result_void_ {
     do {
       try self.__implementation.setSegmentCallback(callback: { () -> (String, String, Bool, Double) -> Void in

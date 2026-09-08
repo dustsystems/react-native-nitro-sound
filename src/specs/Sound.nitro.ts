@@ -161,6 +161,12 @@ export interface Sound
   // Logging methods
   setLogCallback(callback: (message: string) => void): void;
 
+  // Engine lifecycle events (route-change recovery outcome — DUS-1714). Fires
+  // "engineRecoveryFailed" (detail = reason) or "engineRecovered" (detail = new rates);
+  // never reused for general logging — see setLogCallback for that.
+  setEngineEventCallback(callback: (event: string, detail: string) => void): void;
+  removeEngineEventCallback(): void;
+
   // Speech segment callback (called when a new segment file is written)
   setSegmentCallback(callback: (filename: string, filePath: string, isManual: boolean, duration: number) => void): void;
 

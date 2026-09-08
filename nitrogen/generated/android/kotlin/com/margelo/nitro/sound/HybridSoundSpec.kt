@@ -152,6 +152,19 @@ abstract class HybridSoundSpec: HybridObject() {
     return __result
   }
   
+  abstract fun setEngineEventCallback(callback: (event: String, detail: String) -> Unit): Unit
+  
+  @DoNotStrip
+  @Keep
+  private fun setEngineEventCallback_cxx(callback: Func_void_std__string_std__string): Unit {
+    val __result = setEngineEventCallback(callback)
+    return __result
+  }
+  
+  @DoNotStrip
+  @Keep
+  abstract fun removeEngineEventCallback(): Unit
+  
   abstract fun setSegmentCallback(callback: (filename: String, filePath: String, isManual: Boolean, duration: Double) -> Unit): Unit
   
   @DoNotStrip

@@ -21,6 +21,19 @@
 
 > ℹ️ **Swift 6 build warning**: If Xcode shows `function type mismatch … has_value` errors (see [#718](https://github.com/hyochan/react-native-nitro-sound/issues/718)), upgrade to Xcode 16.4 or newer. The workaround and cleanup steps are documented in the [FAQ](docs/FAQ.md#swift-6-compile-error-function-type-mismatch--has_value-718).
 
+> 🌙 **Dust fork note — route-change recovery (`ios/Sound.swift`).** A private serial
+> `engineControlQueue` now owns every engine-destroying step (`endEngineSession`'s teardown,
+> the sleep-capture idle release) and the route-change recovery that follows an
+> `AVAudioEngineConfigurationChange`. Recovery is guarded by an `engineGeneration` counter (a
+> stale attempt from before a teardown or re-setup is a no-op) and a `teardownInFlight` flag, and
+> the graph-mutation calls (`disconnectNodeOutput`/`connect`/`prepare`) run through an
+> `ObjCExceptionCatcher` boundary so a bad-graph `NSException` — previously untrappable by Swift
+> `do/catch` and a process-terminating crash in production (Sentry `DUST-APP-QV`) — lands in the
+> same `catch` as `engine.start()`'s Swift error. On failure the recovery does not retry forever;
+> it sets a flag that `ensureEngineRunning()` re-attempts before the next play, and either way JS
+> is told via `setEngineEventCallback` (`"engineRecoveryFailed"` / `"engineRecovered"`) instead of
+> the process just dying.
+
 <img src="https://github.com/user-attachments/assets/81ce7b7b-0b7d-413b-8a26-505372349ecb" width="70%" alt="Logo" />
 
 ## Legacy Package (react-native-audio-recorder-player)

@@ -117,6 +117,8 @@ export interface Sound extends HybridObject<{
     addPlaybackEndListener(callback: (playbackEndMeta: PlaybackEndType) => void): void;
     removePlaybackEndListener(): void;
     setLogCallback(callback: (message: string) => void): void;
+    setEngineEventCallback(callback: (event: string, detail: string) => void): void;
+    removeEngineEventCallback(): void;
     setSegmentCallback(callback: (filename: string, filePath: string, isManual: boolean, duration: number) => void): void;
     setNextTrackCallback(callback: () => void): void;
     removeNextTrackCallback(): void;

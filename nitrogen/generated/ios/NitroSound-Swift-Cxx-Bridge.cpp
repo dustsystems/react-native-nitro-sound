@@ -70,6 +70,14 @@ namespace margelo::nitro::sound::bridge::swift {
     };
   }
   
+  // pragma MARK: std::function<void(const std::string& /* event */, const std::string& /* detail */)>
+  Func_void_std__string_std__string create_Func_void_std__string_std__string(void* _Nonnull swiftClosureWrapper) noexcept {
+    auto swiftClosure = NitroSound::Func_void_std__string_std__string::fromUnsafe(swiftClosureWrapper);
+    return [swiftClosure = std::move(swiftClosure)](const std::string& event, const std::string& detail) mutable -> void {
+      swiftClosure.call(event, detail);
+    };
+  }
+  
   // pragma MARK: std::function<void(const std::string& /* filename */, const std::string& /* filePath */, bool /* isManual */, double /* duration */)>
   Func_void_std__string_std__string_bool_double create_Func_void_std__string_std__string_bool_double(void* _Nonnull swiftClosureWrapper) noexcept {
     auto swiftClosure = NitroSound::Func_void_std__string_std__string_bool_double::fromUnsafe(swiftClosureWrapper);
@@ -83,14 +91,6 @@ namespace margelo::nitro::sound::bridge::swift {
     auto swiftClosure = NitroSound::Func_void_std__string_bool::fromUnsafe(swiftClosureWrapper);
     return [swiftClosure = std::move(swiftClosure)](const std::string& text, bool isFinal) mutable -> void {
       swiftClosure.call(text, isFinal);
-    };
-  }
-  
-  // pragma MARK: std::function<void(const std::string& /* code */, const std::string& /* message */)>
-  Func_void_std__string_std__string create_Func_void_std__string_std__string(void* _Nonnull swiftClosureWrapper) noexcept {
-    auto swiftClosure = NitroSound::Func_void_std__string_std__string::fromUnsafe(swiftClosureWrapper);
-    return [swiftClosure = std::move(swiftClosure)](const std::string& code, const std::string& message) mutable -> void {
-      swiftClosure.call(code, message);
     };
   }
   

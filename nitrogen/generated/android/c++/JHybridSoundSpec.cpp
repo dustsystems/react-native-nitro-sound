@@ -28,10 +28,10 @@ namespace margelo::nitro::sound { struct PlaybackEndType; }
 #include "JFunc_void_PlaybackEndType.hpp"
 #include "JPlaybackEndType.hpp"
 #include "JFunc_void_std__string.hpp"
+#include "JFunc_void_std__string_std__string.hpp"
 #include "JFunc_void_std__string_std__string_bool_double.hpp"
 #include "JFunc_void.hpp"
 #include "JFunc_void_std__string_bool.hpp"
-#include "JFunc_void_std__string_std__string.hpp"
 
 namespace margelo::nitro::sound {
 
@@ -432,6 +432,14 @@ namespace margelo::nitro::sound {
   void JHybridSoundSpec::setLogCallback(const std::function<void(const std::string& /* message */)>& callback) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string::javaobject> /* callback */)>("setLogCallback_cxx");
     method(_javaPart, JFunc_void_std__string_cxx::fromCpp(callback));
+  }
+  void JHybridSoundSpec::setEngineEventCallback(const std::function<void(const std::string& /* event */, const std::string& /* detail */)>& callback) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string_std__string::javaobject> /* callback */)>("setEngineEventCallback_cxx");
+    method(_javaPart, JFunc_void_std__string_std__string_cxx::fromCpp(callback));
+  }
+  void JHybridSoundSpec::removeEngineEventCallback() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<void()>("removeEngineEventCallback");
+    method(_javaPart);
   }
   void JHybridSoundSpec::setSegmentCallback(const std::function<void(const std::string& /* filename */, const std::string& /* filePath */, bool /* isManual */, double /* duration */)>& callback) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string_std__string_bool_double::javaobject> /* callback */)>("setSegmentCallback_cxx");

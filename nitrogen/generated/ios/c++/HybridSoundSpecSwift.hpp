@@ -282,6 +282,18 @@ namespace margelo::nitro::sound {
         std::rethrow_exception(__result.error());
       }
     }
+    inline void setEngineEventCallback(const std::function<void(const std::string& /* event */, const std::string& /* detail */)>& callback) override {
+      auto __result = _swiftPart.setEngineEventCallback(callback);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
+    inline void removeEngineEventCallback() override {
+      auto __result = _swiftPart.removeEngineEventCallback();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+    }
     inline void setSegmentCallback(const std::function<void(const std::string& /* filename */, const std::string& /* filePath */, bool /* isManual */, double /* duration */)>& callback) override {
       auto __result = _swiftPart.setSegmentCallback(callback);
       if (__result.hasError()) [[unlikely]] {
