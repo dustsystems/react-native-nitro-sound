@@ -220,10 +220,16 @@ final class LiveTranscriber: @unchecked Sendable {
 
         // .volatileResults gives the live in-flight text between finalized
         // segments — the direct analog of SFSpeech partials, minus the decay.
+        // .fastResults makes the transcriber report as soon as it has a
+        // hypothesis instead of holding partials until it has more context:
+        // without it the first text landed a fixed ~4 s after speech began on
+        // both an iPhone 14 and an iPhone 17 Pro, with every partial arriving
+        // in one burst (DUS-1776). Accuracy of volatile text may dip; finals
+        // are unaffected.
         let transcriber = SpeechTranscriber(
             locale: locale,
             transcriptionOptions: [],
-            reportingOptions: [.volatileResults],
+            reportingOptions: [.volatileResults, .fastResults],
             attributeOptions: []
         )
         let analyzer = SpeechAnalyzer(modules: [transcriber])
@@ -233,12 +239,12 @@ final class LiveTranscriber: @unchecked Sendable {
         }
         guard await isCurrent(sid) else { throw RuntimeErrorShim.message("Session superseded during startup") }
 
-        // Warm the model BEFORE any audio flows. A fresh analyzer loads its
-        // assets lazily on first input, so without this the first volatile
-        // result trails the first spoken word by seconds (DUS-1776: a fixed
-        // ~4 s on an iPhone 14) while the UI shows only "Listening…". Done
-        // here, ahead of the engine start, so no buffered audio piles up
-        // behind the load.
+        // Warm the model BEFORE any audio flows so nothing queues behind an
+        // asset load once the tap is live. Measured 30–180 ms on an iPhone
+        // 17 Pro (DUS-1776), so this is not where the old ~4 s first-text
+        // delay came from — that was the transcriber holding partials, see
+        // .fastResults above — but it keeps startup deterministic and the
+        // timing log shows when a device is slower.
         let prepareStart = DispatchTime.now().uptimeNanoseconds
         try await analyzer.prepareToAnalyze(in: analyzerFormat)
         let prepareMs = (DispatchTime.now().uptimeNanoseconds - prepareStart) / 1_000_000
@@ -250,11 +256,21 @@ final class LiveTranscriber: @unchecked Sendable {
         // Forward results BEFORE audio starts so nothing is dropped. The
         // callbacks are locals — a stale session's late emissions route to
         // ITS closures, whose JS generation guard drops them.
+        let resultsStart = DispatchTime.now().uptimeNanoseconds
         let resultsTask = Task { [weak self] in
+            var loggedFirstResult = false
             do {
                 for try await result in transcriber.results {
                     let text = String(result.text.characters)
                     guard !text.isEmpty else { continue }
+                    if !loggedFirstResult {
+                        loggedFirstResult = true
+                        let ms = (DispatchTime.now().uptimeNanoseconds - resultsStart) / 1_000_000
+                        // Native-side time-to-first-text; compare with the JS
+                        // "First dictation result" log to split analyzer
+                        // latency from bridge latency.
+                        self?.log?("🎤 [LT] first result after \(ms)ms (final=\(result.isFinal))")
+                    }
                     onResult(text, result.isFinal)
                 }
             } catch {
