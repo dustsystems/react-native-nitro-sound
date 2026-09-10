@@ -233,6 +233,20 @@ final class LiveTranscriber: @unchecked Sendable {
         }
         guard await isCurrent(sid) else { throw RuntimeErrorShim.message("Session superseded during startup") }
 
+        // Warm the model BEFORE any audio flows. A fresh analyzer loads its
+        // assets lazily on first input, so without this the first volatile
+        // result trails the first spoken word by seconds (DUS-1776: a fixed
+        // ~4 s on an iPhone 14) while the UI shows only "Listening…". Done
+        // here, ahead of the engine start, so no buffered audio piles up
+        // behind the load.
+        let prepareStart = DispatchTime.now().uptimeNanoseconds
+        try await analyzer.prepareToAnalyze(in: analyzerFormat)
+        let prepareMs = (DispatchTime.now().uptimeNanoseconds - prepareStart) / 1_000_000
+        guard await isCurrent(sid) else { throw RuntimeErrorShim.message("Session superseded during startup") }
+        // Logged only for the session that still owns the slot, so a stale
+        // startup can't report its timing as the live session's.
+        log?("🎤 [LT] analyzer prepared in \(prepareMs)ms")
+
         // Forward results BEFORE audio starts so nothing is dropped. The
         // callbacks are locals — a stale session's late emissions route to
         // ITS closures, whose JS generation guard drops them.
