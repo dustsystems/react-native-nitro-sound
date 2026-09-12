@@ -795,6 +795,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             let inputNode = engine.inputNode
             let hwFormat = inputNode.outputFormat(forBus: 0)
+            // Sleep-capture already refuses a zero-rate/zero-channel format
+            // before touching the tap (ensureEngineAndTapForSleepCapture).
+            // The recorder path did not, so a mid-setup route change that
+            // left sampleRate 0 reached AVFoundation and trapped (DUS-1753).
+            guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+                throw RuntimeError.error(withMessage: "Audio input unavailable (format \(hwFormat))")
+            }
 
             // Set default output directory if needed
             if outputDirectory == nil {
@@ -832,14 +839,33 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Install tap - RT-SAFE: copy-only, no processing, NO LOGGING
             // (Logging from RT audio thread can cause glitches via memory allocation & GCD locks)
             // Only RT-safe operations: increment counter + buffer writes.
-            // Remove-then-install under tapControlQueue: any existing tap
-            // (a previous recorder tap, or one sleep capture's keep-alive
-            // installed) is replaced atomically with the same shared block.
+            // Under tapControlQueue: skip removeTap when none exists (sleep-
+            // capture's isInputTapInstalled guard); otherwise remove-then-
+            // install so a previous recorder tap or keep-alive is replaced
+            // with the same shared block. Both AVFoundation calls run in
+            // ObjCExceptionCatcher — an NSException is not catchable from
+            // Swift (DUS-1714 / DUS-1753).
+            var installError: Error?
             tapControlQueue.sync {
-                inputNode.removeTap(onBus: 0)
-                inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat, block: makeInputTapBlock())
-                isInputTapInstalled = true
-                tapOwnedByRecorder = true
+                do {
+                    try ObjCExceptionCatcher.installTap(
+                        on: inputNode,
+                        bus: 0,
+                        bufferSize: 1024,
+                        format: hwFormat,
+                        block: makeInputTapBlock(),
+                        removeFirst: isInputTapInstalled
+                    )
+                    isInputTapInstalled = true
+                    tapOwnedByRecorder = true
+                } catch {
+                    isInputTapInstalled = false
+                    tapOwnedByRecorder = false
+                    installError = error
+                }
+            }
+            if let installError {
+                throw installError
             }
 
             // Start tap monitor timer - logs every 5 seconds to confirm tap is receiving data
