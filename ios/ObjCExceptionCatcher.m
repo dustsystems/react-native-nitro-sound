@@ -41,4 +41,29 @@ NSString *const ObjCExceptionCatcherErrorDomain = @"ObjCException";
     }
 }
 
++ (BOOL)installTapOnNode:(AVAudioNode *)node
+                   onBus:(AVAudioNodeBus)bus
+              bufferSize:(AVAudioFrameCount)bufferSize
+                  format:(AVAudioFormat * _Nullable)format
+                   block:(AVAudioNodeTapBlock)block
+             removeFirst:(BOOL)removeFirst
+                   error:(NSError **)error {
+    @try {
+        if (removeFirst) {
+            [node removeTapOnBus:bus];
+        }
+        [node installTapOnBus:bus bufferSize:bufferSize format:format block:block];
+        return YES;
+    } @catch (NSException *exception) {
+        if (error) {
+            NSDictionary *userInfo = @{
+                NSLocalizedDescriptionKey : exception.reason ?: @"unknown ObjC exception",
+                @"ExceptionName" : exception.name ?: @"unknown",
+            };
+            *error = [NSError errorWithDomain:ObjCExceptionCatcherErrorDomain code:-1 userInfo:userInfo];
+        }
+        return NO;
+    }
+}
+
 @end
