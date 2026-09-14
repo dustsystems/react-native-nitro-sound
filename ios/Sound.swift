@@ -3368,12 +3368,27 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             throw RuntimeError.error(withMessage: "Audio input unavailable (format \(hwFormat))")
         }
+        var installError: Error?
         tapControlQueue.sync {
             if !isInputTapInstalled {
-                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat, block: makeInputTapBlock())
-                isInputTapInstalled = true
-                bridgedLog("🎙️🟠 TAP INSTALLED (sleep capture keep-alive)")
+                do {
+                    try ObjCExceptionCatcher.installTap(
+                        on: engine.inputNode,
+                        bus: 0,
+                        bufferSize: 1024,
+                        format: hwFormat,
+                        block: makeInputTapBlock(),
+                        removeFirst: false
+                    )
+                    isInputTapInstalled = true
+                    bridgedLog("🎙️🟠 TAP INSTALLED (sleep capture keep-alive)")
+                } catch {
+                    installError = error
+                }
             }
+        }
+        if let installError {
+            throw installError
         }
         return hwFormat
     }
@@ -3391,9 +3406,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 if !isInputTapInstalled, let engine = audioEngine {
                     let hw = engine.inputNode.outputFormat(forBus: 0)
                     if hw.sampleRate > 0, hw.channelCount > 0 {
-                        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hw, block: makeInputTapBlock())
-                        isInputTapInstalled = true
-                        bridgedLog("🎙️🟠 TAP REINSTALLED at arm (was removed in the ensure→arm window)")
+                        do {
+                            try ObjCExceptionCatcher.installTap(
+                                on: engine.inputNode,
+                                bus: 0,
+                                bufferSize: 1024,
+                                format: hw,
+                                block: makeInputTapBlock(),
+                                removeFirst: false
+                            )
+                            isInputTapInstalled = true
+                            bridgedLog("🎙️🟠 TAP REINSTALLED at arm (was removed in the ensure→arm window)")
+                        } catch {
+                            bridgedLog("⚠️ TAP REINSTALL at arm failed: \(error.localizedDescription)")
+                        }
                     }
                 }
             } else if isInputTapInstalled, !tapOwnedByRecorder, !isCommandRecognitionActive {
