@@ -122,6 +122,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var tapInstallTime: Date?  // When tap was installed (for throttling after 30 minutes)
     private var isTapLoggingThrottled: Bool = false  // Whether we've switched to 15-minute logging intervals
 
+    // Output-side liveness monitor (DUS-1756). It runs on engineControlQueue, never the
+    // render thread, and observes render progress without mutating the engine or graph.
+    private let outputMonitorInterval: TimeInterval = 15 * 60
+    private var outputMonitorTimer: DispatchSourceTimer?
+    private var outputMonitorStartTime: Date?
+    private weak var lastOutputMonitorPlayerNode: AVAudioPlayerNode?
+    private var lastOutputMonitorSampleTime: AVAudioFramePosition?
+
     // DISABLED: VAD properties
     // private var vadManager: VadManager?
     // private var vadStreamState: VadStreamState?
@@ -926,6 +934,79 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         isTapLoggingThrottled = false
     }
 
+    // MARK: - Output Monitor (logs player render activity off the render thread)
+
+    private func startOutputMonitor() {
+        dispatchPrecondition(condition: .onQueue(engineControlQueue))
+        stopOutputMonitor()
+
+        outputMonitorStartTime = Date()
+        lastOutputMonitorPlayerNode = nil
+        lastOutputMonitorSampleTime = nil
+
+        let timer = DispatchSource.makeTimerSource(queue: engineControlQueue)
+        timer.schedule(deadline: .now() + outputMonitorInterval, repeating: outputMonitorInterval)
+        timer.setEventHandler { [weak self] in
+            self?.logOutputMonitorBeat()
+        }
+        outputMonitorTimer = timer
+        timer.resume()
+    }
+
+    private func stopOutputMonitor() {
+        dispatchPrecondition(condition: .onQueue(engineControlQueue))
+        outputMonitorTimer?.cancel()
+        outputMonitorTimer = nil
+        outputMonitorStartTime = nil
+        lastOutputMonitorPlayerNode = nil
+        lastOutputMonitorSampleTime = nil
+    }
+
+    private func logOutputMonitorBeat() {
+        dispatchPrecondition(condition: .onQueue(engineControlQueue))
+
+        guard let playerNode = currentPlayerNode, playerNode.isPlaying else {
+            stopOutputMonitor()
+            return
+        }
+
+        let elapsedMinutes = outputMonitorStartTime.map {
+            Int(Date().timeIntervalSince($0) / 60.0)
+        } ?? 0
+        let track = outputMonitorTrackDescription()
+        let engineRunning = audioEngine?.isRunning ?? false
+
+        guard let nodeTime = playerNode.lastRenderTime,
+              let playerTime = playerNode.playerTime(forNodeTime: nodeTime) else {
+            bridgedLog("⚠️ OUTPUT STALLED | \(track) | engine running=\(engineRunning) | node playing=true | rendered: unavailable | elapsed: \(elapsedMinutes)min")
+            return
+        }
+
+        let sampleTime = playerTime.sampleTime
+        let isSamePlayer = lastOutputMonitorPlayerNode === playerNode
+        let delta = isSamePlayer && lastOutputMonitorSampleTime != nil
+            ? sampleTime - lastOutputMonitorSampleTime!
+            : sampleTime
+        lastOutputMonitorPlayerNode = playerNode
+        lastOutputMonitorSampleTime = sampleTime
+
+        if delta > 0 {
+            bridgedLog("🔁 OUTPUT ACTIVE | \(track) | engine running=\(engineRunning) | node playing=true | rendered: +\(delta) samples | elapsed: \(elapsedMinutes)min")
+        } else {
+            bridgedLog("⚠️ OUTPUT STALLED | \(track) | engine running=\(engineRunning) | node playing=true | rendered: +\(delta) samples | elapsed: \(elapsedMinutes)min")
+        }
+    }
+
+    private func outputMonitorTrackDescription() -> String {
+        guard let uri = currentPlaybackURI else { return "unknown track" }
+        let filename = URL(string: uri)?.lastPathComponent
+            ?? URL(fileURLWithPath: uri).lastPathComponent
+        if filename == "silent.caf" {
+            return "silent loop playing (keep-alive)"
+        }
+        return "\(filename) \(shouldLoopPlayback ? "loop" : "playing")"
+    }
+
     // MARK: - Debug Helpers
 
     private func logStateSnapshot(context: String) {
@@ -1128,6 +1209,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.engineControlQueue.sync {
                 // Step 4: Stop the audio engine
                 self.engineStartedForSleepCapture = false
+                self.stopOutputMonitor()
                 if let engine = self.audioEngine, engine.isRunning {
                     engine.stop()
                     self.bridgedLog("🔴 AUDIO ENGINE STOPPED")
@@ -2052,6 +2134,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     // and the play are not atomic with a teardown on another queue.
                     if let engine = playerNode.engine, engine.isRunning {
                         playerNode.play()
+                        self.engineControlQueue.async {
+                            self.startOutputMonitor()
+                        }
                         self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
                     } else {
                         self.bridgedLog("⚠️ SKIPPED PLAY — engine torn down before main-queue play (Node \(self.getNodeName(for: playerNode)))")
@@ -2216,6 +2301,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let promise = Promise<String>()
 
         self.bridgedLog("🛑 STOPPING Node \(self.getNodeName(for: self.currentPlayerNode)) (stopPlayer called)")
+        self.engineControlQueue.async { [weak self] in
+            self?.stopOutputMonitor()
+        }
 
         // Cancel loop crossfade timer
         self.loopCrossfadeTimer?.cancel()
@@ -2271,6 +2359,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         if let playerNode = self.currentPlayerNode {
             playerNode.pause()
+            self.engineControlQueue.async { [weak self] in
+                self?.stopOutputMonitor()
+            }
 
             // Also pause ambient loop if playing (uses dedicated Player D)
             // Use micro-fade to avoid audio click
@@ -2300,6 +2391,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         if let playerNode = self.currentPlayerNode {
             playerNode.play()
+            self.engineControlQueue.async { [weak self] in
+                self?.startOutputMonitor()
+            }
 
             // Also resume ambient loop if it was playing (uses dedicated Player D)
             // Use micro-fade to avoid audio click
@@ -3399,6 +3493,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         engineControlQueue.sync {
             teardownInFlight = true
             engineStartedForSleepCapture = false
+            stopOutputMonitor()
             if let engine = audioEngine, engine.isRunning {
                 engine.stop()
                 bridgedLog("🔴 AUDIO ENGINE STOPPED (sleep-capture release)")
