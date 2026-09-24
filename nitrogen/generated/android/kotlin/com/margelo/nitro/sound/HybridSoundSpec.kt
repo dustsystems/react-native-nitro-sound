@@ -43,6 +43,10 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
+  abstract fun setSessionMode(mode: AudioSessionMode): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
   abstract fun beginRecording(maxDurationSeconds: Double): Promise<Unit>
   
   @DoNotStrip

@@ -54,6 +54,15 @@ export interface PlaybackEndType {
 export type PlayBackListener = (playbackMeta: PlayBackType) => void;
 export type PlaybackEndListener = (playbackEndMeta: PlaybackEndType) => void;
 
+/**
+ * The overnight engine's audio session category (playback-only journey,
+ * DUS-1956). 'playAndRecord' is the default and today's engine: microphone
+ * input, the overnight tap, sleep talking, voice commands. 'playback' opens no
+ * input at all: iOS shows no orange microphone indicator and Bluetooth buds
+ * stay on the stereo A2DP route.
+ */
+export type AudioSessionMode = 'playback' | 'playAndRecord';
+
 export interface Sound
   extends HybridObject<{ ios: 'swift'; android: 'kotlin' }> {
   // Recording methods (unified AVAudioEngine with speech detection)
@@ -72,6 +81,19 @@ export interface Sound
    * indicator disappears and all audio resources are released.
    */
   endEngineSession(): Promise<void>;
+
+  /**
+   * Choose the audio session category the engine opens with (DUS-1956).
+   * Chosen once per night, before the first startPlayer or startAmbientLoop;
+   * it sticks until endEngineSession, which resets it to 'playAndRecord'.
+   * The same mode again is a no-op. If an engine is already running with the
+   * other category it is torn down first (the full endEngineSession teardown)
+   * and the next play rebuilds it; it is never silently reused.
+   * While the mode is 'playback', startRecorder, beginRecording,
+   * startCommandRecognition and startSleepCapture reject with an error whose
+   * message starts with PLAYBACK_SESSION_NO_INPUT.
+   */
+  setSessionMode(mode: AudioSessionMode): Promise<void>;
 
   // Simple fixed-duration recording API
 
