@@ -36,9 +36,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// (performFullEngineTeardown, releaseEngineAfterSleepCaptureIfIdle) reset
     /// it to .playAndRecord.
     ///
-    /// Invariant: while audioEngineInitialized is true, the live engine was
-    /// built with this mode. setSessionMode holds engineInitLock across its
-    /// teardown and its write, so no setupAudioEngine() can interleave.
+    /// setSessionMode reads and writes it under engineInitLock, the lock
+    /// setupAudioEngine holds while it reads it, so a mode change and an
+    /// engine build never interleave. The two teardown resets run under
+    /// engineControlQueue instead (taking engineInitLock there would invert
+    /// the lock order), which is the same window a teardown racing a setup
+    /// already had before this mode existed.
     private enum EngineSessionMode: String {
         case playAndRecord
         case playback
@@ -279,9 +282,102 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             return
         }
 
-        // Setup audio session for recording + playback
+        // Setup the audio session. One mode for the whole setup (DUS-1956),
+        // read under engineInitLock; setSessionMode writes it under the same lock.
         let audioSession = AVAudioSession.sharedInstance()
+        let mode = sessionMode
+        if mode == .playback {
+            try configurePlaybackSession(audioSession)
+        } else {
+            try configurePlayAndRecordSession(audioSession)
+        }
 
+        do {
+            try audioSession.setActive(true)
+        } catch {
+            let nsError = error as NSError
+            bridgedLog("❌ Session activation failed: \(error.localizedDescription) (code: \(nsError.code))")
+            throw RuntimeError.error(withMessage: "Audio session activation failed - app may be suspended. Retry when app wakes: \(error.localizedDescription)")
+        }
+
+        // Logged assertion of the category in force (DUS-1956). This library
+        // has no XCTest target, so this line is the proof in a simulator or
+        // device log: grep "AUDIO SESSION CATEGORY". MISMATCH is a failure.
+        let expectedCategory: AVAudioSession.Category = (mode == .playback) ? .playback : .playAndRecord
+        let actualCategory = audioSession.category
+        bridgedLog("🔈 AUDIO SESSION CATEGORY requested=\(mode.rawValue) actual=\(actualCategory.rawValue) \(actualCategory == expectedCategory ? "OK" : "MISMATCH")")
+
+        // Create engine and player nodes
+        audioEngine = AVAudioEngine()
+        guard let engine = audioEngine else {
+            throw RuntimeError.error(withMessage: "Failed to create audio engine")
+        }
+
+        audioPlayerNodeA = AVAudioPlayerNode()
+        audioPlayerNodeB = AVAudioPlayerNode()
+        audioPlayerNodeC = AVAudioPlayerNode()
+        audioPlayerNodeD = AVAudioPlayerNode()  // Dedicated ambient loop player
+
+        guard let playerA = audioPlayerNodeA,
+            let playerB = audioPlayerNodeB,
+            let playerC = audioPlayerNodeC,
+            let playerD = audioPlayerNodeD else {
+            throw RuntimeError.error(withMessage: "Failed to create audio engine components")
+        }
+
+        engine.attach(playerA)
+        engine.attach(playerB)
+        engine.attach(playerC)
+        engine.attach(playerD)
+
+        let mainMixer = engine.mainMixerNode
+        engine.connect(playerA, to: mainMixer, format: nil)
+        engine.connect(playerB, to: mainMixer, format: nil)
+        engine.connect(playerC, to: mainMixer, format: nil)
+        engine.connect(playerD, to: mainMixer, format: nil)
+
+        // Initialize input node (required for .playAndRecord). Never on a
+        // playback session: creating the input node is what opens the mic.
+        if mode == .playAndRecord {
+            let _ = engine.inputNode
+        }
+
+        do {
+            try engine.start()
+            audioEngineInitialized = true
+            // A fresh engine has a fresh graph — any stale failure flag from a torn-down
+            // engine must not leak forward (review finding, DUS-1714).
+            engineControlQueue.sync { engineGeneration += 1; engineRecoveryFailed = false }
+
+            // Log hardware sample rate. A playback session has no input node,
+            // so it logs the output side and names its mode (DUS-1956).
+            if mode == .playback {
+                let outputFormat = engine.outputNode.outputFormat(forBus: 0)
+                bridgedLog("🟦🟦🟦  AUDIO ENGINE: PLAYBACK MODE (no input)  🟦🟦🟦")
+                bridgedLog("📊 Hardware: \(Int(outputFormat.sampleRate))Hz, \(outputFormat.channelCount) channel(s) out")
+            } else {
+                let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+                let hwSampleRate = inputFormat.sampleRate
+                let hwChannels = inputFormat.channelCount
+                bridgedLog("🟩🟩🟩  🎙️ AUDIO ENGINE: PLAY+RECORD MODE 🎙️  🟩🟩🟩")
+                bridgedLog("📊 Hardware: \(Int(hwSampleRate))Hz, \(hwChannels) channel(s)")
+            }
+            // Clean baseline: engine is now RUNNING, so in/out/mixer report their real
+            // settled formats (not the 44.1kHz default an unconnected mixer reports).
+            // This is the reference point to compare every later route-change snapshot against.
+            logStateSnapshot(context: "engine-setup-complete")
+        } catch {
+            let nsError = error as NSError
+            bridgedLog("❌ Engine start failed: \(error.localizedDescription) (code: \(nsError.code))")
+            audioEngineInitialized = false
+            throw error
+        }
+    }
+
+    /// Today's session, unchanged (DUS-1956 moved these lines here verbatim):
+    /// .playAndRecord for the overnight tap, output to A2DP buds, input pinned
+    /// to the built-in mic. See the comments inside for why each line exists.
+    private func configurePlayAndRecordSession(_ audioSession: AVAudioSession) throws {
         // Output routing: .allowBluetoothA2DP lets .playAndRecord route output to A2DP
         // buds (AirPods, Ozlo). We deliberately DO NOT set .allowBluetooth (HFP). HFP
         // forces a Bluetooth headset into the low-rate bidirectional voice profile
@@ -319,70 +415,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         } else {
             bridgedLog("⚠️ Built-in mic not found in availableInputs — input not pinned")
         }
+    }
 
-        do {
-            try audioSession.setActive(true)
-        } catch {
-            let nsError = error as NSError
-            bridgedLog("❌ Session activation failed: \(error.localizedDescription) (code: \(nsError.code))")
-            throw RuntimeError.error(withMessage: "Audio session activation failed - app may be suspended. Retry when app wakes: \(error.localizedDescription)")
-        }
-
-        // Create engine and player nodes
-        audioEngine = AVAudioEngine()
-        guard let engine = audioEngine else {
-            throw RuntimeError.error(withMessage: "Failed to create audio engine")
-        }
-
-        audioPlayerNodeA = AVAudioPlayerNode()
-        audioPlayerNodeB = AVAudioPlayerNode()
-        audioPlayerNodeC = AVAudioPlayerNode()
-        audioPlayerNodeD = AVAudioPlayerNode()  // Dedicated ambient loop player
-
-        guard let playerA = audioPlayerNodeA,
-            let playerB = audioPlayerNodeB,
-            let playerC = audioPlayerNodeC,
-            let playerD = audioPlayerNodeD else {
-            throw RuntimeError.error(withMessage: "Failed to create audio engine components")
-        }
-
-        engine.attach(playerA)
-        engine.attach(playerB)
-        engine.attach(playerC)
-        engine.attach(playerD)
-
-        let mainMixer = engine.mainMixerNode
-        engine.connect(playerA, to: mainMixer, format: nil)
-        engine.connect(playerB, to: mainMixer, format: nil)
-        engine.connect(playerC, to: mainMixer, format: nil)
-        engine.connect(playerD, to: mainMixer, format: nil)
-
-        // Initialize input node (required for .playAndRecord)
-        let _ = engine.inputNode
-
-        do {
-            try engine.start()
-            audioEngineInitialized = true
-            // A fresh engine has a fresh graph — any stale failure flag from a torn-down
-            // engine must not leak forward (review finding, DUS-1714).
-            engineControlQueue.sync { engineGeneration += 1; engineRecoveryFailed = false }
-
-            // Log hardware sample rate
-            let inputFormat = engine.inputNode.outputFormat(forBus: 0)
-            let hwSampleRate = inputFormat.sampleRate
-            let hwChannels = inputFormat.channelCount
-            bridgedLog("🟩🟩🟩  🎙️ AUDIO ENGINE: PLAY+RECORD MODE 🎙️  🟩🟩🟩")
-            bridgedLog("📊 Hardware: \(Int(hwSampleRate))Hz, \(hwChannels) channel(s)")
-            // Clean baseline: engine is now RUNNING, so in/out/mixer report their real
-            // settled formats (not the 44.1kHz default an unconnected mixer reports).
-            // This is the reference point to compare every later route-change snapshot against.
-            logStateSnapshot(context: "engine-setup-complete")
-        } catch {
-            let nsError = error as NSError
-            bridgedLog("❌ Engine start failed: \(error.localizedDescription) (code: \(nsError.code))")
-            audioEngineInitialized = false
-            throw error
-        }
+    /// Playback-only night (DUS-1956): no input at all, so iOS shows no orange
+    /// microphone indicator and Bluetooth buds stay on the stereo A2DP route.
+    /// .playback reaches A2DP by itself; .defaultToSpeaker and
+    /// .allowBluetoothA2DP only apply to .playAndRecord (.defaultToSpeaker is
+    /// an error with any other category). No preferred input channels and no
+    /// built-in-mic pin: both are input settings.
+    private func configurePlaybackSession(_ audioSession: AVAudioSession) throws {
+        try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try audioSession.setPreferredIOBufferDuration(0.0232)
+        bridgedLog("🔈 Playback session: no input, input not pinned")
     }
 
     // MARK: - Engine Lifecycle
@@ -443,9 +487,19 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("   ↳ recovery skip: engine already running, no known failure")
             return
         }
-        guard engine.inputNode.outputFormat(forBus: 0).sampleRate > 0 else {
-            bridgedLog("   ↳ recovery skip: no input format")
-            return
+        // A playback session has no input node; probe the output side instead.
+        // Reading engine.inputNode would create one (DUS-1956), and this guard
+        // would then skip every recovery on a playback night.
+        if sessionMode == .playback {
+            guard engine.outputNode.outputFormat(forBus: 0).sampleRate > 0 else {
+                bridgedLog("   ↳ recovery skip: no output format (playback session)")
+                return
+            }
+        } else {
+            guard engine.inputNode.outputFormat(forBus: 0).sampleRate > 0 else {
+                bridgedLog("   ↳ recovery skip: no input format")
+                return
+            }
         }
 
         let players = [audioPlayerNodeA, audioPlayerNodeB, audioPlayerNodeC, audioPlayerNodeD].compactMap { $0 }
@@ -460,7 +514,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             try ObjCExceptionCatcher.reconnectPlayers(players, engine: engine)
             engineRecoveryFailed = false
             let mixHz = Int(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate)
-            let inHz = Int(engine.inputNode.outputFormat(forBus: 0).sampleRate)
+            let inHz = inputSampleRateForLog(engine)
             bridgedLog("   ↳ ✅ recovery succeeded — mixer=\(mixHz)Hz input=\(inHz)Hz")
             emitEngineEvent("engineRecovered", "mixer=\(mixHz)Hz input=\(inHz)Hz")
         } catch {
@@ -946,6 +1000,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // MARK: - Debug Helpers
 
+    /// Input sample rate for diagnostics. A playback session (DUS-1956) has no
+    /// input node, and reading engine.inputNode would create one, so it
+    /// reports 0.
+    private func inputSampleRateForLog(_ engine: AVAudioEngine) -> Int {
+        guard sessionMode == .playAndRecord else { return 0 }
+        return Int(engine.inputNode.outputFormat(forBus: 0).sampleRate)
+    }
+
     private func logStateSnapshot(context: String) {
         let session = AVAudioSession.sharedInstance()
 
@@ -977,7 +1039,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // SEPARATE hardware paths, not guaranteed equal (e.g. input 24kHz stale vs
         // output 48kHz after a disconnect). Flag the divergence inline — it's the bug.
         if let engine = audioEngine {
-            let inHz = Int(engine.inputNode.outputFormat(forBus: 0).sampleRate)
+            let inHz = inputSampleRateForLog(engine)
             let outHz = Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)
             let mixHz = Int(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate)
             // The mismatch flag is only meaningful while the engine is RUNNING. When
@@ -986,7 +1048,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // trip a false "mismatch". So only judge alignment when running.
             let suffix: String
             if engineRun {
-                suffix = (inHz == outHz && outHz == mixHz) ? "✓ aligned" : "⚠️ MISMATCH"
+                suffix = ((inHz == outHz || sessionMode == .playback) && outHz == mixHz) ? "✓ aligned" : "⚠️ MISMATCH"
             } else {
                 suffix = "(engine stopped — values may be defaults)"
             }
@@ -1023,7 +1085,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // ownership, capture's disarm removes the tap once IT is done too).
             // Serialized with capture's arm/disarm via tapControlQueue.
             self.tapControlQueue.sync {
-                if let engine = self.audioEngine {
+                // A playback session has no tap and no input node (DUS-1956):
+                // it takes the else branch, which only drops the ring buffer.
+                if let engine = self.audioEngine, self.sessionMode == .playAndRecord {
                     if spsc_load_acquire_i64(self.sleepCaptureFanOutArmed) != 0 {
                         self.tapOwnedByRecorder = false
                         self.bridgedLog("🎙️🟡 RECORDING TAP RETAINED - sleep capture still consuming it")
@@ -1145,7 +1209,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // layer stopped capture first (the normal order), nothing revives.
         self.tapControlQueue.sync {
             if let engine = self.audioEngine {
-                engine.inputNode.removeTap(onBus: 0)
+                // A playback session never created an input node, and touching
+                // engine.inputNode would create one (DUS-1956).
+                if self.sessionMode == .playAndRecord {
+                    engine.inputNode.removeTap(onBus: 0)
+                }
                 self.isInputTapInstalled = false
                 self.tapOwnedByRecorder = false
                 self.stopTapMonitor()
@@ -4125,8 +4193,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         crossfadeTimer?.invalidate()
         loopCrossfadeTimer?.cancel()
 
-        // Cleanup unified audio engine if needed
-        if let engine = audioEngine {
+        // Cleanup unified audio engine if needed (never the input node of a
+        // playback session, DUS-1956)
+        if let engine = audioEngine, sessionMode == .playAndRecord {
             engine.inputNode.removeTap(onBus: 0)
             stopTapMonitor()
             // Don't stop the engine here as it might be used by other instances
