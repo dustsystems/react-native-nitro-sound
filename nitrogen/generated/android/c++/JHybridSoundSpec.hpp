@@ -57,6 +57,7 @@ namespace margelo::nitro::sound {
     std::shared_ptr<Promise<void>> startRecorder() override;
     std::shared_ptr<Promise<void>> stopRecorder() override;
     std::shared_ptr<Promise<void>> endEngineSession() override;
+    std::shared_ptr<Promise<void>> setSessionMode(AudioSessionMode mode) override;
     std::shared_ptr<Promise<void>> beginRecording(double maxDurationSeconds) override;
     std::shared_ptr<Promise<void>> endRecording() override;
     std::shared_ptr<Promise<bool>> isSegmentRecording() override;

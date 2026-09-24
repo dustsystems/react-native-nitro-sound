@@ -13,12 +13,15 @@
 #error NitroModules cannot be found! Are you sure you installed NitroModules properly?
 #endif
 
+// Forward declaration of `AudioSessionMode` to properly resolve imports.
+namespace margelo::nitro::sound { enum class AudioSessionMode; }
 // Forward declaration of `PlayBackType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlayBackType; }
 // Forward declaration of `PlaybackEndType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlaybackEndType; }
 
 #include <NitroModules/Promise.hpp>
+#include "AudioSessionMode.hpp"
 #include <string>
 #include <optional>
 #include <unordered_map>
@@ -61,6 +64,7 @@ namespace margelo::nitro::sound {
       virtual std::shared_ptr<Promise<void>> startRecorder() = 0;
       virtual std::shared_ptr<Promise<void>> stopRecorder() = 0;
       virtual std::shared_ptr<Promise<void>> endEngineSession() = 0;
+      virtual std::shared_ptr<Promise<void>> setSessionMode(AudioSessionMode mode) = 0;
       virtual std::shared_ptr<Promise<void>> beginRecording(double maxDurationSeconds) = 0;
       virtual std::shared_ptr<Promise<void>> endRecording() = 0;
       virtual std::shared_ptr<Promise<bool>> isSegmentRecording() = 0;

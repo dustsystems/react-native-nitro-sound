@@ -8,6 +8,8 @@
 #pragma once
 
 // Forward declarations of C++ defined types
+// Forward declaration of `AudioSessionMode` to properly resolve imports.
+namespace margelo::nitro::sound { enum class AudioSessionMode; }
 // Forward declaration of `HybridSoundSpec` to properly resolve imports.
 namespace margelo::nitro::sound { class HybridSoundSpec; }
 // Forward declaration of `PlayBackType` to properly resolve imports.
@@ -16,6 +18,7 @@ namespace margelo::nitro::sound { struct PlayBackType; }
 namespace margelo::nitro::sound { struct PlaybackEndType; }
 
 // Include C++ defined types
+#include "AudioSessionMode.hpp"
 #include "HybridSoundSpec.hpp"
 #include "PlayBackType.hpp"
 #include "PlaybackEndType.hpp"

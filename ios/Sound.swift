@@ -27,6 +27,27 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// retries through the same boundary before falling back to restartAudioEngine().
     private var engineRecoveryFailed = false
 
+    // MARK: - Session mode (playback-only journey, DUS-1956)
+    /// Which AVAudioSession category the next setupAudioEngine() opens.
+    /// .playAndRecord is today's engine (input, tap, sleep talking, voice
+    /// commands). .playback opens no input at all: no orange microphone
+    /// indicator, Bluetooth buds stay on A2DP. JS chooses it once per night via
+    /// setSessionMode before the first play; both teardown paths
+    /// (performFullEngineTeardown, releaseEngineAfterSleepCaptureIfIdle) reset
+    /// it to .playAndRecord.
+    ///
+    /// setSessionMode reads and writes it under engineInitLock, the lock
+    /// setupAudioEngine holds while it reads it, so a mode change and an
+    /// engine build never interleave. The two teardown resets run under
+    /// engineControlQueue instead (taking engineInitLock there would invert
+    /// the lock order), which is the same window a teardown racing a setup
+    /// already had before this mode existed.
+    private enum EngineSessionMode: String {
+        case playAndRecord
+        case playback
+    }
+    private var sessionMode: EngineSessionMode = .playAndRecord
+
     // Dual player nodes for crossfading support
     private var audioPlayerNodeA: AVAudioPlayerNode?
     private var audioPlayerNodeB: AVAudioPlayerNode?
@@ -261,9 +282,102 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             return
         }
 
-        // Setup audio session for recording + playback
+        // Setup the audio session. One mode for the whole setup (DUS-1956),
+        // read under engineInitLock; setSessionMode writes it under the same lock.
         let audioSession = AVAudioSession.sharedInstance()
+        let mode = sessionMode
+        if mode == .playback {
+            try configurePlaybackSession(audioSession)
+        } else {
+            try configurePlayAndRecordSession(audioSession)
+        }
 
+        do {
+            try audioSession.setActive(true)
+        } catch {
+            let nsError = error as NSError
+            bridgedLog("❌ Session activation failed: \(error.localizedDescription) (code: \(nsError.code))")
+            throw RuntimeError.error(withMessage: "Audio session activation failed - app may be suspended. Retry when app wakes: \(error.localizedDescription)")
+        }
+
+        // Logged assertion of the category in force (DUS-1956). This library
+        // has no XCTest target, so this line is the proof in a simulator or
+        // device log: grep "AUDIO SESSION CATEGORY". MISMATCH is a failure.
+        let expectedCategory: AVAudioSession.Category = (mode == .playback) ? .playback : .playAndRecord
+        let actualCategory = audioSession.category
+        bridgedLog("🔈 AUDIO SESSION CATEGORY requested=\(mode.rawValue) actual=\(actualCategory.rawValue) \(actualCategory == expectedCategory ? "OK" : "MISMATCH")")
+
+        // Create engine and player nodes
+        audioEngine = AVAudioEngine()
+        guard let engine = audioEngine else {
+            throw RuntimeError.error(withMessage: "Failed to create audio engine")
+        }
+
+        audioPlayerNodeA = AVAudioPlayerNode()
+        audioPlayerNodeB = AVAudioPlayerNode()
+        audioPlayerNodeC = AVAudioPlayerNode()
+        audioPlayerNodeD = AVAudioPlayerNode()  // Dedicated ambient loop player
+
+        guard let playerA = audioPlayerNodeA,
+            let playerB = audioPlayerNodeB,
+            let playerC = audioPlayerNodeC,
+            let playerD = audioPlayerNodeD else {
+            throw RuntimeError.error(withMessage: "Failed to create audio engine components")
+        }
+
+        engine.attach(playerA)
+        engine.attach(playerB)
+        engine.attach(playerC)
+        engine.attach(playerD)
+
+        let mainMixer = engine.mainMixerNode
+        engine.connect(playerA, to: mainMixer, format: nil)
+        engine.connect(playerB, to: mainMixer, format: nil)
+        engine.connect(playerC, to: mainMixer, format: nil)
+        engine.connect(playerD, to: mainMixer, format: nil)
+
+        // Initialize input node (required for .playAndRecord). Never on a
+        // playback session: creating the input node is what opens the mic.
+        if mode == .playAndRecord {
+            let _ = engine.inputNode
+        }
+
+        do {
+            try engine.start()
+            audioEngineInitialized = true
+            // A fresh engine has a fresh graph — any stale failure flag from a torn-down
+            // engine must not leak forward (review finding, DUS-1714).
+            engineControlQueue.sync { engineGeneration += 1; engineRecoveryFailed = false }
+
+            // Log hardware sample rate. A playback session has no input node,
+            // so it logs the output side and names its mode (DUS-1956).
+            if mode == .playback {
+                let outputFormat = engine.outputNode.outputFormat(forBus: 0)
+                bridgedLog("🟦🟦🟦  AUDIO ENGINE: PLAYBACK MODE (no input)  🟦🟦🟦")
+                bridgedLog("📊 Hardware: \(Int(outputFormat.sampleRate))Hz, \(outputFormat.channelCount) channel(s) out")
+            } else {
+                let inputFormat = engine.inputNode.outputFormat(forBus: 0)
+                let hwSampleRate = inputFormat.sampleRate
+                let hwChannels = inputFormat.channelCount
+                bridgedLog("🟩🟩🟩  🎙️ AUDIO ENGINE: PLAY+RECORD MODE 🎙️  🟩🟩🟩")
+                bridgedLog("📊 Hardware: \(Int(hwSampleRate))Hz, \(hwChannels) channel(s)")
+            }
+            // Clean baseline: engine is now RUNNING, so in/out/mixer report their real
+            // settled formats (not the 44.1kHz default an unconnected mixer reports).
+            // This is the reference point to compare every later route-change snapshot against.
+            logStateSnapshot(context: "engine-setup-complete")
+        } catch {
+            let nsError = error as NSError
+            bridgedLog("❌ Engine start failed: \(error.localizedDescription) (code: \(nsError.code))")
+            audioEngineInitialized = false
+            throw error
+        }
+    }
+
+    /// Today's session, unchanged (DUS-1956 moved these lines here verbatim):
+    /// .playAndRecord for the overnight tap, output to A2DP buds, input pinned
+    /// to the built-in mic. See the comments inside for why each line exists.
+    private func configurePlayAndRecordSession(_ audioSession: AVAudioSession) throws {
         // Output routing: .allowBluetoothA2DP lets .playAndRecord route output to A2DP
         // buds (AirPods, Ozlo). We deliberately DO NOT set .allowBluetooth (HFP). HFP
         // forces a Bluetooth headset into the low-rate bidirectional voice profile
@@ -301,70 +415,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         } else {
             bridgedLog("⚠️ Built-in mic not found in availableInputs — input not pinned")
         }
+    }
 
-        do {
-            try audioSession.setActive(true)
-        } catch {
-            let nsError = error as NSError
-            bridgedLog("❌ Session activation failed: \(error.localizedDescription) (code: \(nsError.code))")
-            throw RuntimeError.error(withMessage: "Audio session activation failed - app may be suspended. Retry when app wakes: \(error.localizedDescription)")
-        }
-
-        // Create engine and player nodes
-        audioEngine = AVAudioEngine()
-        guard let engine = audioEngine else {
-            throw RuntimeError.error(withMessage: "Failed to create audio engine")
-        }
-
-        audioPlayerNodeA = AVAudioPlayerNode()
-        audioPlayerNodeB = AVAudioPlayerNode()
-        audioPlayerNodeC = AVAudioPlayerNode()
-        audioPlayerNodeD = AVAudioPlayerNode()  // Dedicated ambient loop player
-
-        guard let playerA = audioPlayerNodeA,
-            let playerB = audioPlayerNodeB,
-            let playerC = audioPlayerNodeC,
-            let playerD = audioPlayerNodeD else {
-            throw RuntimeError.error(withMessage: "Failed to create audio engine components")
-        }
-
-        engine.attach(playerA)
-        engine.attach(playerB)
-        engine.attach(playerC)
-        engine.attach(playerD)
-
-        let mainMixer = engine.mainMixerNode
-        engine.connect(playerA, to: mainMixer, format: nil)
-        engine.connect(playerB, to: mainMixer, format: nil)
-        engine.connect(playerC, to: mainMixer, format: nil)
-        engine.connect(playerD, to: mainMixer, format: nil)
-
-        // Initialize input node (required for .playAndRecord)
-        let _ = engine.inputNode
-
-        do {
-            try engine.start()
-            audioEngineInitialized = true
-            // A fresh engine has a fresh graph — any stale failure flag from a torn-down
-            // engine must not leak forward (review finding, DUS-1714).
-            engineControlQueue.sync { engineGeneration += 1; engineRecoveryFailed = false }
-
-            // Log hardware sample rate
-            let inputFormat = engine.inputNode.outputFormat(forBus: 0)
-            let hwSampleRate = inputFormat.sampleRate
-            let hwChannels = inputFormat.channelCount
-            bridgedLog("🟩🟩🟩  🎙️ AUDIO ENGINE: PLAY+RECORD MODE 🎙️  🟩🟩🟩")
-            bridgedLog("📊 Hardware: \(Int(hwSampleRate))Hz, \(hwChannels) channel(s)")
-            // Clean baseline: engine is now RUNNING, so in/out/mixer report their real
-            // settled formats (not the 44.1kHz default an unconnected mixer reports).
-            // This is the reference point to compare every later route-change snapshot against.
-            logStateSnapshot(context: "engine-setup-complete")
-        } catch {
-            let nsError = error as NSError
-            bridgedLog("❌ Engine start failed: \(error.localizedDescription) (code: \(nsError.code))")
-            audioEngineInitialized = false
-            throw error
-        }
+    /// Playback-only night (DUS-1956): no input at all, so iOS shows no orange
+    /// microphone indicator and Bluetooth buds stay on the stereo A2DP route.
+    /// .playback reaches A2DP by itself; .defaultToSpeaker and
+    /// .allowBluetoothA2DP only apply to .playAndRecord (.defaultToSpeaker is
+    /// an error with any other category). No preferred input channels and no
+    /// built-in-mic pin: both are input settings.
+    private func configurePlaybackSession(_ audioSession: AVAudioSession) throws {
+        try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try audioSession.setPreferredIOBufferDuration(0.0232)
+        bridgedLog("🔈 Playback session: no input, input not pinned")
     }
 
     // MARK: - Engine Lifecycle
@@ -425,9 +487,19 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("   ↳ recovery skip: engine already running, no known failure")
             return
         }
-        guard engine.inputNode.outputFormat(forBus: 0).sampleRate > 0 else {
-            bridgedLog("   ↳ recovery skip: no input format")
-            return
+        // A playback session has no input node; probe the output side instead.
+        // Reading engine.inputNode would create one (DUS-1956), and this guard
+        // would then skip every recovery on a playback night.
+        if sessionMode == .playback {
+            guard engine.outputNode.outputFormat(forBus: 0).sampleRate > 0 else {
+                bridgedLog("   ↳ recovery skip: no output format (playback session)")
+                return
+            }
+        } else {
+            guard engine.inputNode.outputFormat(forBus: 0).sampleRate > 0 else {
+                bridgedLog("   ↳ recovery skip: no input format")
+                return
+            }
         }
 
         let players = [audioPlayerNodeA, audioPlayerNodeB, audioPlayerNodeC, audioPlayerNodeD].compactMap { $0 }
@@ -442,7 +514,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             try ObjCExceptionCatcher.reconnectPlayers(players, engine: engine)
             engineRecoveryFailed = false
             let mixHz = Int(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate)
-            let inHz = Int(engine.inputNode.outputFormat(forBus: 0).sampleRate)
+            let inHz = inputSampleRateForLog(engine)
             bridgedLog("   ↳ ✅ recovery succeeded — mixer=\(mixHz)Hz input=\(inHz)Hz")
             emitEngineEvent("engineRecovered", "mixer=\(mixHz)Hz input=\(inHz)Hz")
         } catch {
@@ -734,6 +806,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // MARK: - Recording Methods
 
     public func startRecorder() throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): refuse before setupAudioEngine, so a
+        // mistaken call fails loudly and never reconfigures the session.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("startRecorder"))
+        }
         let promise = Promise<Void>()
 
         // Return immediately and process in background
@@ -745,6 +822,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             do {
                 try self.setupAudioEngine()
+                // DUS-1956 defence: a setSessionMode(playback) that took
+                // engineInitLock while this call waited on it built a playback
+                // engine; never install a tap on it.
+                if self.sessionMode == .playback {
+                    promise.reject(withError: self.playbackSessionInputError("startRecorder"))
+                    return
+                }
 
                 // Remote command center disabled - no lock screen widget needed
                 // self.setupRemoteCommandCenter()
@@ -928,6 +1012,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // MARK: - Debug Helpers
 
+    /// Input sample rate for diagnostics. A playback session (DUS-1956) has no
+    /// input node, and reading engine.inputNode would create one, so it
+    /// reports 0.
+    private func inputSampleRateForLog(_ engine: AVAudioEngine) -> Int {
+        guard sessionMode == .playAndRecord else { return 0 }
+        return Int(engine.inputNode.outputFormat(forBus: 0).sampleRate)
+    }
+
     private func logStateSnapshot(context: String) {
         let session = AVAudioSession.sharedInstance()
 
@@ -959,7 +1051,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // SEPARATE hardware paths, not guaranteed equal (e.g. input 24kHz stale vs
         // output 48kHz after a disconnect). Flag the divergence inline — it's the bug.
         if let engine = audioEngine {
-            let inHz = Int(engine.inputNode.outputFormat(forBus: 0).sampleRate)
+            let inHz = inputSampleRateForLog(engine)
             let outHz = Int(engine.outputNode.outputFormat(forBus: 0).sampleRate)
             let mixHz = Int(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate)
             // The mismatch flag is only meaningful while the engine is RUNNING. When
@@ -968,7 +1060,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // trip a false "mismatch". So only judge alignment when running.
             let suffix: String
             if engineRun {
-                suffix = (inHz == outHz && outHz == mixHz) ? "✓ aligned" : "⚠️ MISMATCH"
+                suffix = ((inHz == outHz || sessionMode == .playback) && outHz == mixHz) ? "✓ aligned" : "⚠️ MISMATCH"
             } else {
                 suffix = "(engine stopped — values may be defaults)"
             }
@@ -1005,7 +1097,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // ownership, capture's disarm removes the tap once IT is done too).
             // Serialized with capture's arm/disarm via tapControlQueue.
             self.tapControlQueue.sync {
-                if let engine = self.audioEngine {
+                // A playback session has no tap and no input node (DUS-1956):
+                // it takes the else branch, which only drops the ring buffer.
+                if let engine = self.audioEngine, self.sessionMode == .playAndRecord {
                     if spsc_load_acquire_i64(self.sleepCaptureFanOutArmed) != 0 {
                         self.tapOwnedByRecorder = false
                         self.bridgedLog("🎙️🟡 RECORDING TAP RETAINED - sleep capture still consuming it")
@@ -1063,122 +1157,194 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
                 return
             }
-
-            self.bridgedLog("🔚 endEngineSession() - full teardown")
-
-            // Mark teardown in flight BEFORE any engine work so a route-change recovery
-            // dequeued from engineControlQueue in the meantime skips instead of "fixing" an
-            // engine that's about to be destroyed a few lines below (DUS-1714). This block
-            // runs on DispatchQueue.global — never engineControlQueue — so .sync is safe.
-            self.engineControlQueue.sync { self.teardownInFlight = true }
-
-            // Step 1: Stop recording session if active
-            if self.isRecordingSession {
-                self.stopRecordingSession()
-            }
-
-            // Step 1b: Stop fixed duration timer if active
-            self.fixedDurationTimer?.cancel()
-            self.fixedDurationTimer = nil
-
-            // Step 1c: Stop live command recognition if active (defensive — the
-            // alarm flow normally calls stopCommandRecognition() on its own).
-            self.commandControlQueue.sync {
-                guard self.isCommandRecognitionActive else { return }
-                self.isCommandRecognitionActive = false
-                self.commandRestartWorkItem?.cancel()
-                self.commandRestartWorkItem = nil
-                self.commandRequest?.endAudio()
-                self.commandTask?.cancel()
-                self.commandTask = nil
-                self.commandRequest = nil
-                self.commandRecognizer = nil
-                self.bridgedLog("🎙️🔴 [VC] command recognition stopped (endEngineSession)")
-            }
-
-            // DISABLED: Stop VAD monitoring if active (autoVAD mode)
-            // if self.currentMode == .autoVAD {
-            //     self.stopVADMonitoring()
-            // }
-
-            // Step 2: Stop all playback
-            self.currentPlayerNode?.stop()
-            self.audioPlayerNodeA?.stop()
-            self.audioPlayerNodeB?.stop()
-            self.audioPlayerNodeC?.stop()
-            self.audioPlayerNodeD?.stop()
-
-            // Step 3: Remove microphone tap. Deliberately unconditional — this
-            // is the full-teardown path and its semantics are unchanged. If
-            // sleep capture is still armed, its 30 s watchdog notices the
-            // silent tap and re-arms engine+tap via its ensure hook; if the JS
-            // layer stopped capture first (the normal order), nothing revives.
-            self.tapControlQueue.sync {
-                if let engine = self.audioEngine {
-                    engine.inputNode.removeTap(onBus: 0)
-                    self.isInputTapInstalled = false
-                    self.tapOwnedByRecorder = false
-                    self.stopTapMonitor()
-                    self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED (endEngineSession)")
-                }
-            }
-
-            // Steps 4-6: stop, deactivate, and destroy the engine — serialized on
-            // engineControlQueue against any in-flight route-change recovery (DUS-1714).
-            self.engineControlQueue.sync {
-                // Step 4: Stop the audio engine
-                self.engineStartedForSleepCapture = false
-                if let engine = self.audioEngine, engine.isRunning {
-                    engine.stop()
-                    self.bridgedLog("🔴 AUDIO ENGINE STOPPED")
-                }
-
-                // Step 5: Deactivate audio session (critical for removing mic indicator)
-                let audioSession = AVAudioSession.sharedInstance()
-                do {
-                    try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
-                } catch {
-                    self.bridgedLog("⚠️ Failed to deactivate session: \(error.localizedDescription)")
-                }
-
-                // Step 6: Destroy engine instance (forces re-initialization on next session)
-                self.audioEngine = nil
-                self.audioPlayerNodeA = nil
-                self.audioPlayerNodeB = nil
-                self.audioPlayerNodeC = nil
-                self.audioPlayerNodeD = nil
-                self.audioEngineInitialized = false
-                self.engineGeneration += 1
-                self.engineRecoveryFailed = false
-                self.teardownInFlight = false
-            }
-
-            // Step 7: Clean up recording resources
-            self.currentSegmentFile = nil
-            self.spscBuffer = nil
-            self.processingTimer = nil
-            self.processingQueue = nil
-            // DISABLED: VAD cleanup
-            // self.vadManager = nil
-            // self.vadStreamState = nil
-
-            // Step 8: Reset playback state
-            self.currentPlayerNode = nil
-            self.currentAudioFile = nil
-            self.currentAmbientFile = nil
-            self.isAmbientLoopPlaying = false
-            self.shouldLoopPlayback = false
-            self.currentPlaybackURI = nil
-
-            // Step 9: Reset recording state
-            // DISABLED: self.currentMode = .idle
-            self.isRecordingSession = false
-
-            self.bridgedLog("✅ endEngineSession() completed")
+            self.performFullEngineTeardown()
             promise.resolve(withResult: ())
         }
 
         return promise
+    }
+
+    /// The full teardown behind endEngineSession(), also run by setSessionMode
+    /// when a live engine has the other category (DUS-1956). The body moved
+    /// verbatim out of endEngineSession's closure. It .syncs onto
+    /// engineControlQueue, tapControlQueue and commandControlQueue, so it must
+    /// never run on any of them; both callers run it on DispatchQueue.global.
+    private func performFullEngineTeardown() {
+        self.bridgedLog("🔚 endEngineSession() - full teardown")
+
+        // Mark teardown in flight BEFORE any engine work so a route-change recovery
+        // dequeued from engineControlQueue in the meantime skips instead of "fixing" an
+        // engine that's about to be destroyed a few lines below (DUS-1714). This block
+        // runs on DispatchQueue.global — never engineControlQueue — so .sync is safe.
+        self.engineControlQueue.sync { self.teardownInFlight = true }
+
+        // Step 1: Stop recording session if active
+        if self.isRecordingSession {
+            self.stopRecordingSession()
+        }
+
+        // Step 1b: Stop fixed duration timer if active
+        self.fixedDurationTimer?.cancel()
+        self.fixedDurationTimer = nil
+
+        // Step 1c: Stop live command recognition if active (defensive — the
+        // alarm flow normally calls stopCommandRecognition() on its own).
+        self.commandControlQueue.sync {
+            guard self.isCommandRecognitionActive else { return }
+            self.isCommandRecognitionActive = false
+            self.commandRestartWorkItem?.cancel()
+            self.commandRestartWorkItem = nil
+            self.commandRequest?.endAudio()
+            self.commandTask?.cancel()
+            self.commandTask = nil
+            self.commandRequest = nil
+            self.commandRecognizer = nil
+            self.bridgedLog("🎙️🔴 [VC] command recognition stopped (endEngineSession)")
+        }
+
+        // DISABLED: Stop VAD monitoring if active (autoVAD mode)
+        // if self.currentMode == .autoVAD {
+        //     self.stopVADMonitoring()
+        // }
+
+        // Step 2: Stop all playback
+        self.currentPlayerNode?.stop()
+        self.audioPlayerNodeA?.stop()
+        self.audioPlayerNodeB?.stop()
+        self.audioPlayerNodeC?.stop()
+        self.audioPlayerNodeD?.stop()
+
+        // Step 3: Remove microphone tap. Deliberately unconditional — this
+        // is the full-teardown path and its semantics are unchanged. If
+        // sleep capture is still armed, its 30 s watchdog notices the
+        // silent tap and re-arms engine+tap via its ensure hook; if the JS
+        // layer stopped capture first (the normal order), nothing revives.
+        self.tapControlQueue.sync {
+            if let engine = self.audioEngine {
+                // A playback session never created an input node, and touching
+                // engine.inputNode would create one (DUS-1956).
+                if self.sessionMode == .playAndRecord {
+                    engine.inputNode.removeTap(onBus: 0)
+                }
+                self.isInputTapInstalled = false
+                self.tapOwnedByRecorder = false
+                self.stopTapMonitor()
+                self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED (endEngineSession)")
+            }
+        }
+
+        // Steps 4-6: stop, deactivate, and destroy the engine — serialized on
+        // engineControlQueue against any in-flight route-change recovery (DUS-1714).
+        self.engineControlQueue.sync {
+            // Step 4: Stop the audio engine
+            self.engineStartedForSleepCapture = false
+            if let engine = self.audioEngine, engine.isRunning {
+                engine.stop()
+                self.bridgedLog("🔴 AUDIO ENGINE STOPPED")
+            }
+
+            // Step 5: Deactivate audio session (critical for removing mic indicator)
+            let audioSession = AVAudioSession.sharedInstance()
+            do {
+                try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
+            } catch {
+                self.bridgedLog("⚠️ Failed to deactivate session: \(error.localizedDescription)")
+            }
+
+            // Step 6: Destroy engine instance (forces re-initialization on next session)
+            self.audioEngine = nil
+            self.audioPlayerNodeA = nil
+            self.audioPlayerNodeB = nil
+            self.audioPlayerNodeC = nil
+            self.audioPlayerNodeD = nil
+            self.audioEngineInitialized = false
+            self.engineGeneration += 1
+            self.engineRecoveryFailed = false
+            // DUS-1956: the next engine opens as today's play-and-record
+            // unless JS chooses again. Reset with the engine it described.
+            self.sessionMode = .playAndRecord
+            self.teardownInFlight = false
+        }
+
+        // Step 7: Clean up recording resources
+        self.currentSegmentFile = nil
+        self.spscBuffer = nil
+        self.processingTimer = nil
+        self.processingQueue = nil
+        // DISABLED: VAD cleanup
+        // self.vadManager = nil
+        // self.vadStreamState = nil
+
+        // Step 8: Reset playback state
+        self.currentPlayerNode = nil
+        self.currentAudioFile = nil
+        self.currentAmbientFile = nil
+        self.isAmbientLoopPlaying = false
+        self.shouldLoopPlayback = false
+        self.currentPlaybackURI = nil
+
+        // Step 9: Reset recording state
+        // DISABLED: self.currentMode = .idle
+        self.isRecordingSession = false
+
+        self.bridgedLog("✅ endEngineSession() completed")
+    }
+
+    /// Chooses the category the next setupAudioEngine() opens (DUS-1956).
+    /// Called by JS once per night before the first play. The same mode again
+    /// is a no-op. A different mode with a live engine tears that engine down
+    /// first through performFullEngineTeardown (never silently reused); the
+    /// next startPlayer or startAmbientLoop rebuilds it with the new category.
+    public func setSessionMode(mode: AudioSessionMode) throws -> Promise<Void> {
+        let promise = Promise<Void>()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
+                return
+            }
+            guard let requested = EngineSessionMode(rawValue: mode.stringValue) else {
+                promise.reject(withError: RuntimeError.error(
+                    withMessage: "Unknown audio session mode: \(mode.stringValue)"))
+                return
+            }
+
+            // Held across the teardown and the write, so no setupAudioEngine()
+            // can build an engine in between with the old mode (the note
+            // on sessionMode). Lock order is engineInitLock, then
+            // engineControlQueue: the order setupAudioEngine already uses, and
+            // no block on engineControlQueue, tapControlQueue or
+            // commandControlQueue takes engineInitLock. This closure runs on
+            // DispatchQueue.global, never on engineControlQueue, so the
+            // teardown's .sync calls are safe (DUS-1714).
+            self.engineInitLock.lock()
+            defer { self.engineInitLock.unlock() }
+
+            let previous = self.sessionMode
+            if previous == requested {
+                self.bridgedLog("🎚️ SESSION MODE \(requested.rawValue): unchanged (engine initialized=\(self.audioEngineInitialized))")
+                promise.resolve(withResult: ())
+                return
+            }
+            if self.audioEngineInitialized {
+                self.bridgedLog("🎚️ SESSION MODE \(previous.rawValue) -> \(requested.rawValue): tearing the live engine down first")
+                self.performFullEngineTeardown()
+            }
+            self.sessionMode = requested
+            self.bridgedLog("🎚️ SESSION MODE \(requested.rawValue): set, the next engine opens with it")
+            promise.resolve(withResult: ())
+        }
+
+        return promise
+    }
+
+    /// The loud refusal for any input path on a playback session (DUS-1956).
+    /// Nothing is reconfigured: the category stays .playback. The message
+    /// starts with PLAYBACK_SESSION_NO_INPUT so JS and logs can match it.
+    private func playbackSessionInputError(_ caller: String) -> Error {
+        bridgedLog("🚫 \(caller) refused: this audio session is playback-only (no input) until endEngineSession")
+        return RuntimeError.error(
+            withMessage: "PLAYBACK_SESSION_NO_INPUT: \(caller) refused, the audio session is playback-only until endEngineSession")
     }
 
     // MARK: - Simple Recording API (Fixed Duration)
@@ -1191,6 +1357,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
      * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
      */
     public func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): there is no tap to record from.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("beginRecording"))
+        }
         // A dream dictation is a deliberate act — sleep capture pauses for its
         // duration so the dictation can't be filed as sleep-talking clips.
         SleepCapture.shared.pauseForDreamRecording()
@@ -3074,6 +3244,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// same SPSC buffer / worker that recording uses. See
     /// docs/voice-command-dual-engine-fix-implementation-plan.md.
     public func startCommandRecognition() throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): no input, so no voice commands.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("startCommandRecognition"))
+        }
         let promise = Promise<Void>()
         commandControlQueue.async { [weak self] in
             guard let self = self else {
@@ -3312,7 +3486,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     ///   stops exactly where it always did (endEngineSession), so no existing
     ///   caller's stop semantics change.
     fileprivate func ensureEngineAndTapForSleepCapture() throws -> AVAudioFormat {
+        // Also reached from sleep capture's watchdog, not only from
+        // startSleepCapture: never install a tap on a playback session (DUS-1956).
+        if sessionMode == .playback {
+            throw playbackSessionInputError("sleep capture engine tap")
+        }
         try setupAudioEngine()  // no-op when already initialized (lock-guarded)
+        // DUS-1956 defence: same re-check as startRecorder, for a mode switch
+        // that landed while this call waited on engineInitLock.
+        if sessionMode == .playback {
+            throw playbackSessionInputError("sleep capture engine tap")
+        }
         guard let engine = audioEngine else {
             throw RuntimeError.error(withMessage: "Audio engine unavailable for sleep capture")
         }
@@ -3362,7 +3546,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         tapControlQueue.sync {
             spsc_store_release_i64(sleepCaptureFanOutArmed, armed ? 1 : 0)
             if armed {
-                if !isInputTapInstalled, let engine = audioEngine {
+                if !isInputTapInstalled, sessionMode == .playAndRecord, let engine = audioEngine {
                     let hw = engine.inputNode.outputFormat(forBus: 0)
                     if hw.sampleRate > 0, hw.channelCount > 0 {
                         engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hw, block: makeInputTapBlock())
@@ -3419,12 +3603,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             audioEngineInitialized = false
             engineGeneration += 1
             engineRecoveryFailed = false
+            // DUS-1956: same reset as endEngineSession.
+            sessionMode = .playAndRecord
             teardownInFlight = false
             bridgedLog("😴🔚 [SC] engine released after sleep-capture disarm (no other consumers)")
         }
     }
 
     public func startSleepCapture(configJson: String) throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): sleep talking needs the input tap.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("startSleepCapture"))
+        }
         let promise = Promise<Void>()
         SleepCapture.shared.log = { [weak self] message in self?.bridgedLog(message) }
         // Guarded mode / ownAudioOverlap: reads existing playback state only.
@@ -4046,8 +4236,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         crossfadeTimer?.invalidate()
         loopCrossfadeTimer?.cancel()
 
-        // Cleanup unified audio engine if needed
-        if let engine = audioEngine {
+        // Cleanup unified audio engine if needed (never the input node of a
+        // playback session, DUS-1956)
+        if let engine = audioEngine, sessionMode == .playAndRecord {
             engine.inputNode.removeTap(onBus: 0)
             stopTapMonitor()
             // Don't stop the engine here as it might be used by other instances
