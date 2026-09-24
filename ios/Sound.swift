@@ -806,6 +806,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // MARK: - Recording Methods
 
     public func startRecorder() throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): refuse before setupAudioEngine, so a
+        // mistaken call fails loudly and never reconfigures the session.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("startRecorder"))
+        }
         let promise = Promise<Void>()
 
         // Return immediately and process in background
@@ -1298,7 +1303,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
 
             // Held across the teardown and the write, so no setupAudioEngine()
-            // can build an engine in between with the old mode (the invariant
+            // can build an engine in between with the old mode (the note
             // on sessionMode). Lock order is engineInitLock, then
             // engineControlQueue: the order setupAudioEngine already uses, and
             // no block on engineControlQueue, tapControlQueue or
@@ -1326,6 +1331,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return promise
     }
 
+    /// The loud refusal for any input path on a playback session (DUS-1956).
+    /// Nothing is reconfigured: the category stays .playback. The message
+    /// starts with PLAYBACK_SESSION_NO_INPUT so JS and logs can match it.
+    private func playbackSessionInputError(_ caller: String) -> Error {
+        bridgedLog("🚫 \(caller) refused: this audio session is playback-only (no input) until endEngineSession")
+        return RuntimeError.error(
+            withMessage: "PLAYBACK_SESSION_NO_INPUT: \(caller) refused, the audio session is playback-only until endEngineSession")
+    }
+
     // MARK: - Simple Recording API (Fixed Duration)
     // New simplified recording: start with max duration, auto-stops when timer fires
 
@@ -1336,6 +1350,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
      * @param maxDurationSeconds Maximum recording duration (e.g., 90 seconds)
      */
     public func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): there is no tap to record from.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("beginRecording"))
+        }
         // A dream dictation is a deliberate act — sleep capture pauses for its
         // duration so the dictation can't be filed as sleep-talking clips.
         SleepCapture.shared.pauseForDreamRecording()
@@ -3219,6 +3237,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// same SPSC buffer / worker that recording uses. See
     /// docs/voice-command-dual-engine-fix-implementation-plan.md.
     public func startCommandRecognition() throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): no input, so no voice commands.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("startCommandRecognition"))
+        }
         let promise = Promise<Void>()
         commandControlQueue.async { [weak self] in
             guard let self = self else {
@@ -3457,6 +3479,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     ///   stops exactly where it always did (endEngineSession), so no existing
     ///   caller's stop semantics change.
     fileprivate func ensureEngineAndTapForSleepCapture() throws -> AVAudioFormat {
+        // Also reached from sleep capture's watchdog, not only from
+        // startSleepCapture: never install a tap on a playback session (DUS-1956).
+        if sessionMode == .playback {
+            throw playbackSessionInputError("sleep capture engine tap")
+        }
         try setupAudioEngine()  // no-op when already initialized (lock-guarded)
         guard let engine = audioEngine else {
             throw RuntimeError.error(withMessage: "Audio engine unavailable for sleep capture")
@@ -3507,7 +3534,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         tapControlQueue.sync {
             spsc_store_release_i64(sleepCaptureFanOutArmed, armed ? 1 : 0)
             if armed {
-                if !isInputTapInstalled, let engine = audioEngine {
+                if !isInputTapInstalled, sessionMode == .playAndRecord, let engine = audioEngine {
                     let hw = engine.inputNode.outputFormat(forBus: 0)
                     if hw.sampleRate > 0, hw.channelCount > 0 {
                         engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hw, block: makeInputTapBlock())
@@ -3572,6 +3599,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
 
     public func startSleepCapture(configJson: String) throws -> Promise<Void> {
+        // Playback-only night (DUS-1956): sleep talking needs the input tap.
+        if sessionMode == .playback {
+            return Promise<Void>.rejected(withError: playbackSessionInputError("startSleepCapture"))
+        }
         let promise = Promise<Void>()
         SleepCapture.shared.log = { [weak self] message in self?.bridgedLog(message) }
         // Guarded mode / ownAudioOverlap: reads existing playback state only.
