@@ -822,6 +822,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             do {
                 try self.setupAudioEngine()
+                // DUS-1956 defence: a setSessionMode(playback) that took
+                // engineInitLock while this call waited on it built a playback
+                // engine; never install a tap on it.
+                if self.sessionMode == .playback {
+                    promise.reject(withError: self.playbackSessionInputError("startRecorder"))
+                    return
+                }
 
                 // Remote command center disabled - no lock screen widget needed
                 // self.setupRemoteCommandCenter()
@@ -3485,6 +3492,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             throw playbackSessionInputError("sleep capture engine tap")
         }
         try setupAudioEngine()  // no-op when already initialized (lock-guarded)
+        // DUS-1956 defence: same re-check as startRecorder, for a mode switch
+        // that landed while this call waited on engineInitLock.
+        if sessionMode == .playback {
+            throw playbackSessionInputError("sleep capture engine tap")
+        }
         guard let engine = audioEngine else {
             throw RuntimeError.error(withMessage: "Audio engine unavailable for sleep capture")
         }
