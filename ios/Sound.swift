@@ -1350,6 +1350,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         spscBuffer?.reset()
         workerChunkCounter = 0  // Reset debug counters for new session
         tapCallbackCounter = 0
+        // Reset the tap monitor's baseline with the counter, or its next tick compares the
+        // fresh count against the pre-recording total and logs a false TAP STALLED (DUS-1861).
+        lastLoggedTapCount = 0
 
         // Open file for writing at 16kHz format
         guard let targetFormat = self.targetFormat else {
