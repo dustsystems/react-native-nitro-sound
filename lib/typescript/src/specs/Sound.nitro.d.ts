@@ -85,6 +85,22 @@ export interface Sound extends HybridObject<{
      */
     setSessionMode(mode: AudioSessionMode): Promise<void>;
     /**
+     * Pin the morning alarm to the iPhone speaker (DUS-2238). Enabling sets the
+     * play-and-record category without the A2DP option, then nudges the route with
+     * overrideOutputAudioPort(.none), and is judged by the ACTUAL route: in the
+     * background iOS can refuse setCategory ('!int') and still re-route to the
+     * speaker after the nudge. Called by JS on every ring; reset by endEngineSession
+     * and setSessionMode. Waits (at most 1.5 s) for the speaker, drains the engine
+     * recovery and requires a live engine to be running. Never rejects. Resolves
+     * JSON `{ outcome, before, after, error?, notes? }` (`before`/`after` are output
+     * port types, `notes` lists step errors such as `category_refused:560557684`),
+     * `outcome` one of `speaker` (built-in speaker, no A2DP output), `buds_restored`
+     * (enabled: false), `skipped_playback_session` (playback-only, nothing touched)
+     * or `failed` (not on the speaker, or the engine stayed stopped; today's options
+     * with A2DP were restored).
+     */
+    setAlarmSpeakerOnly(enabled: boolean): Promise<string>;
+    /**
      * Begin recording with a maximum duration.
      * Recording automatically stops when the duration is reached.
      * Can be stopped early with endRecording().

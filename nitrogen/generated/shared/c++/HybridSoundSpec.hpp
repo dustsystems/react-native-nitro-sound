@@ -65,6 +65,7 @@ namespace margelo::nitro::sound {
       virtual std::shared_ptr<Promise<void>> stopRecorder() = 0;
       virtual std::shared_ptr<Promise<void>> endEngineSession() = 0;
       virtual std::shared_ptr<Promise<void>> setSessionMode(AudioSessionMode mode) = 0;
+      virtual std::shared_ptr<Promise<std::string>> setAlarmSpeakerOnly(bool enabled) = 0;
       virtual std::shared_ptr<Promise<void>> beginRecording(double maxDurationSeconds) = 0;
       virtual std::shared_ptr<Promise<void>> endRecording() = 0;
       virtual std::shared_ptr<Promise<bool>> isSegmentRecording() = 0;

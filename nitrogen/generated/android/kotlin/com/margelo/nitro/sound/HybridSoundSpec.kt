@@ -47,6 +47,10 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
+  abstract fun setAlarmSpeakerOnly(enabled: Boolean): Promise<String>
+  
+  @DoNotStrip
+  @Keep
   abstract fun beginRecording(maxDurationSeconds: Double): Promise<Unit>
   
   @DoNotStrip
