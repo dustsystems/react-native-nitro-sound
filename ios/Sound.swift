@@ -49,14 +49,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var sessionMode: EngineSessionMode = .playAndRecord
 
     // MARK: - Alarm speaker route (DUS-2238)
-    /// While true, configurePlayAndRecordSession omits .allowBluetoothA2DP and
-    /// overrides the output port to the built-in speaker, so the morning alarm
-    /// rings from the iPhone even with Bluetooth buds or wired headphones
-    /// connected. JS flips it through setAlarmSpeakerOnly once per ring; every
-    /// engine build goes through configurePlayAndRecordSession, so an engine
-    /// built or rebuilt while it is true comes up on the speaker too. Read and
-    /// written under engineInitLock like sessionMode; both teardown paths reset
-    /// it under engineControlQueue. Never touched on a .playback session.
+    /// While true, playAndRecordOptions omits .allowBluetoothA2DP, so Bluetooth
+    /// buds are not an eligible output and .defaultToSpeaker puts the morning
+    /// alarm on the iPhone speaker. JS flips it through setAlarmSpeakerOnly once
+    /// per ring; every engine build goes through configurePlayAndRecordSession,
+    /// so an engine built or rebuilt while it is true comes up on the speaker
+    /// too. Read and written under engineInitLock like sessionMode; both
+    /// teardown paths reset it under engineControlQueue. Never touched on a
+    /// .playback session.
     private var alarmSpeakerOnly = false
 
     // Dual player nodes for crossfading support
@@ -400,15 +400,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Dropping HFP keeps buds in A2DP (high-rate output only), and we take INPUT
         // from the built-in mic instead (pinned below). Sleep buds have no usable mic
         // and AirPods' mic is unhelpful at sleep, so we lose nothing.
-        // DUS-2238: while the alarm is pinned to the speaker, A2DP outputs are
-        // not offered as routes at all (Apple: clearing the option removes
-        // paired A2DP devices from the available outputs). .defaultToSpeaker
-        // stays in every case, or output falls to the earpiece.
-        var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
-        if !alarmSpeakerOnly {
-            options.insert(.allowBluetoothA2DP)
-        }
-        try audioSession.setCategory(.playAndRecord, mode: .default, options: options)
+        // DUS-2238: the options (with or without A2DP) come from playAndRecordOptions.
+        try setPlayAndRecordCategory(audioSession)
         if audioSession.maximumInputNumberOfChannels >= 1 {
             try? audioSession.setPreferredInputNumberOfChannels(1)
         }
@@ -432,20 +425,24 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         } else {
             bridgedLog("⚠️ Built-in mic not found in availableInputs — input not pinned")
         }
+    }
 
-        // DUS-2238: wired headphones still beat .defaultToSpeaker, so the port
-        // override is applied every time the session is configured for the
-        // speaker (iOS clears it on the next route change). Logged, never
-        // thrown: an engine build must not fail because of the override, and
-        // omitting A2DP above is already enough for Bluetooth buds.
-        if alarmSpeakerOnly {
-            do {
-                try audioSession.overrideOutputAudioPort(.speaker)
-                bridgedLog("🔈 ALARM SPEAKER: A2DP omitted, output override -> speaker")
-            } catch {
-                bridgedLog("⚠️ ALARM SPEAKER: overrideOutputAudioPort(.speaker) failed: \(error.localizedDescription)")
-            }
+    /// The .playAndRecord options (DUS-2238). While the alarm is pinned to the
+    /// speaker, A2DP outputs are not offered as routes at all (Apple: clearing
+    /// the option removes paired A2DP devices from the available outputs).
+    /// .defaultToSpeaker stays in every case, or output falls to the earpiece.
+    private func playAndRecordOptions() -> AVAudioSession.CategoryOptions {
+        var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
+        if !alarmSpeakerOnly {
+            options.insert(.allowBluetoothA2DP)
         }
+        return options
+    }
+
+    /// Sets the .playAndRecord category with playAndRecordOptions and nothing
+    /// else (DUS-2238). The only session call setAlarmSpeakerOnly makes.
+    private func setPlayAndRecordCategory(_ audioSession: AVAudioSession) throws {
+        try audioSession.setCategory(.playAndRecord, mode: .default, options: playAndRecordOptions())
     }
 
     /// Playback-only night (DUS-1956): no input at all, so iOS shows no orange
@@ -1397,17 +1394,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return "{\"outcome\":\"\(outcome)\",\"before\":\"\",\"after\":\"\"}"
     }
 
-    /// Clears any output port override (DUS-2238 restore paths). Log-only:
-    /// the restore must never fail because of it.
-    private func clearOutputOverride(_ session: AVAudioSession) {
-        do {
-            try session.overrideOutputAudioPort(.none)
-            bridgedLog("🔈 ALARM SPEAKER: output override cleared")
-        } catch {
-            bridgedLog("⚠️ ALARM SPEAKER: overrideOutputAudioPort(.none) failed: \(error.localizedDescription)")
-        }
-    }
-
     /// Polls every 50 ms, at most 1500 ms, until the built-in speaker is in
     /// the current route (DUS-2238). Logs the wait and its result.
     private func waitForSpeakerRoute(_ session: AVAudioSession) {
@@ -1453,17 +1439,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
 
             do {
-                // Step 2: set the bool and reconfigure in place. Always runs,
-                // even when the output is already the speaker, so a night with
-                // no buds at the first ring still drops A2DP and AirPods put in
-                // during a snooze cannot pull the re-ring into the buds.
+                // Step 2: set the bool and change the category options in place.
+                // Always runs, even when the output is already the speaker, so a
+                // night with no buds at the first ring still drops A2DP and
+                // AirPods put in during a snooze cannot pull the re-ring into the
+                // buds. Category only, never configurePlayAndRecordSession: on a
+                // device, re-applying setPreferredIOBufferDuration mid-alarm threw
+                // '!int' after the category change had already succeeded.
                 self.alarmSpeakerOnly = enabled
-                try self.configurePlayAndRecordSession(session)
-                if !enabled {
-                    // Restore: drop any speaker override this morning left behind,
-                    // so the buds (or wired headphones) get the output back.
-                    self.clearOutputOverride(session)
-                }
+                try self.setPlayAndRecordCategory(session)
 
                 // Step 3 (speaker only): the route change is asynchronous, and the
                 // engine config change it triggers stops the engine AFTER this call
@@ -1500,13 +1484,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             } catch {
                 // Native fallback, only when a step threw: back to today's
                 // options (with A2DP) so the alarm can at least ring in the buds.
+                // Category only, for the same reason as Step 2.
                 self.alarmSpeakerOnly = false
                 do {
-                    try self.configurePlayAndRecordSession(session)
+                    try self.setPlayAndRecordCategory(session)
                 } catch {
                     self.bridgedLog("⚠️ ALARM SPEAKER: restoring today's session options also failed: \(error.localizedDescription)")
                 }
-                self.clearOutputOverride(session)
+                // The real route after the fallback, so the outcome is honest.
                 let after = self.currentOutputPortTypes()
                 self.bridgedLog("❌ ALARM SPEAKER failed: \(error.localizedDescription) (A2DP restored) before=\(before) after=\(after)")
                 promise.resolve(withResult: self.alarmRouteJSON(
