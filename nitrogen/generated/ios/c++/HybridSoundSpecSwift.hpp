@@ -111,6 +111,14 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::shared_ptr<Promise<std::string>> setAlarmSpeakerOnly(bool enabled) override {
+      auto __result = _swiftPart.setAlarmSpeakerOnly(std::forward<decltype(enabled)>(enabled));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
     inline std::shared_ptr<Promise<void>> beginRecording(double maxDurationSeconds) override {
       auto __result = _swiftPart.beginRecording(std::forward<decltype(maxDurationSeconds)>(maxDurationSeconds));
       if (__result.hasError()) [[unlikely]] {

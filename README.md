@@ -801,3 +801,16 @@ See the [contributing guide](CONTRIBUTING.md) to learn how to contribute to the 
 ## License
 
 MIT
+
+## Alarm speaker route (DUS-2238)
+
+`setAlarmSpeakerOnly(enabled)` pins the overnight engine's output to the iPhone speaker for
+the morning alarm. While the bool is set, `configurePlayAndRecordSession` omits
+`.allowBluetoothA2DP` (so A2DP buds are not offered as routes at all) and applies
+`overrideOutputAudioPort(.speaker)` after the built-in mic pin (so wired headphones lose too).
+It reconfigures the live session in place, then runs `ensureEngineRunning` when an engine
+exists; the route change itself restarts the engine through the existing configuration-change
+recovery. It never rejects: it resolves JSON `{ outcome, before, after }` with `outcome` one
+of `speaker`, `buds_restored`, `skipped_playback_session` (a `.playback` session is never
+touched) or `failed` (a step threw and today's options were restored). Both teardown paths
+reset the bool. Grep a device log for `ALARM SPEAKER` to see every outcome.

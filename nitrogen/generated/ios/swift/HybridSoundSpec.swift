@@ -17,6 +17,7 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func stopRecorder() throws -> Promise<Void>
   func endEngineSession() throws -> Promise<Void>
   func setSessionMode(mode: AudioSessionMode) throws -> Promise<Void>
+  func setAlarmSpeakerOnly(enabled: Bool) throws -> Promise<String>
   func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void>
   func endRecording() throws -> Promise<Void>
   func isSegmentRecording() throws -> Promise<Bool>

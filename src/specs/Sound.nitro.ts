@@ -95,6 +95,21 @@ export interface Sound
    */
   setSessionMode(mode: AudioSessionMode): Promise<void>;
 
+  /**
+   * Pin the morning alarm to the iPhone speaker (DUS-2238). While enabled, the
+   * play-and-record session omits the A2DP option and overrides the output
+   * port to the speaker, so the alarm rings from the phone even with Bluetooth
+   * buds or wired headphones connected. Called by JS on every ring; reset by
+   * endEngineSession. Never rejects. Resolves JSON
+   * `{ outcome, before, after, error? }` where `before` and `after` are the
+   * output port types read before and right after the call (the route change
+   * settles asynchronously, so `after` is best-effort) and `outcome` is one of
+   * `speaker`, `buds_restored` (enabled: false), `skipped_playback_session`
+   * (the session is playback-only, nothing touched) or `failed` (a step threw;
+   * today's options with A2DP were restored).
+   */
+  setAlarmSpeakerOnly(enabled: boolean): Promise<string>;
+
   // Simple fixed-duration recording API
 
   /**
