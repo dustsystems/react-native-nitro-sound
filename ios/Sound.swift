@@ -1591,15 +1591,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // the buds. Category only, for the same reason as Step 1.
             let reason = engineStopped ? "Engine not running after the speaker switch" : "Route is not the speaker"
             self.alarmSpeakerOnly = false
+            var restoreState = "A2DP restored"
             do {
                 try self.setPlayAndRecordCategory(session)
             } catch {
                 self.bridgedLog("⚠️ ALARM SPEAKER: restoring today's session options also failed: \(error.localizedDescription)")
                 notes.append(self.alarmRouteNote("fallback_category_refused", error))
+                restoreState = "A2DP restore refused"
             }
             // The real route after the fallback, so the outcome is honest.
             let after = self.currentOutputPortTypes()
-            self.bridgedLog("❌ ALARM SPEAKER failed: \(reason) (A2DP restored) before=\(before) after=\(after) notes=\(notes)")
+            self.bridgedLog("❌ ALARM SPEAKER failed: \(reason) (\(restoreState)) before=\(before) after=\(after) notes=\(notes)")
             promise.resolve(withResult: self.alarmRouteJSON(
                 outcome: "failed", before: before, after: after, error: reason, notes: notes))
         }
