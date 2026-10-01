@@ -1382,16 +1382,50 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             .joined(separator: "+")
     }
 
-    /// The JSON setAlarmSpeakerOnly resolves with. Falls back to a hand-built
-    /// string if JSONSerialization refuses (it never should for four strings).
-    private func alarmRouteJSON(outcome: String, before: String, after: String, error: String?) -> String {
+    /// The JSON setAlarmSpeakerOnly resolves with. `notes` lists the steps that
+    /// threw on the way (for example `category_refused:560557684`), so the trail
+    /// shows how the route landed even when the outcome is `speaker`. Falls back
+    /// to a hand-built string if JSONSerialization refuses (it never should).
+    private func alarmRouteJSON(outcome: String, before: String, after: String, error: String?, notes: [String] = []) -> String {
         var payload: [String: String] = ["outcome": outcome, "before": before, "after": after]
         if let error = error { payload["error"] = error }
+        if !notes.isEmpty { payload["notes"] = notes.joined(separator: ",") }
         if let data = try? JSONSerialization.data(withJSONObject: payload),
            let json = String(data: data, encoding: .utf8) {
             return json
         }
         return "{\"outcome\":\"\(outcome)\",\"before\":\"\",\"after\":\"\"}"
+    }
+
+    /// Short note for a step that threw: `<step>:<OSStatus or NSError code>`.
+    private func alarmRouteNote(_ step: String, _ error: Error) -> String {
+        "\(step):\((error as NSError).code)"
+    }
+
+    /// True when the current route is the built-in speaker with no Bluetooth
+    /// A2DP output (DUS-2238). The only test of whether the alarm switch worked.
+    private func routeIsSpeakerWithoutA2DP(_ session: AVAudioSession) -> Bool {
+        let outputs = session.currentRoute.outputs.map { $0.portType }
+        return outputs.contains(.builtInSpeaker) && !outputs.contains(.bluetoothA2DP)
+    }
+
+    /// The route nudge (DUS-2238). overrideOutputAudioPort(.none) is what made
+    /// iOS re-evaluate the route in the background on 2026-10-01 (iPhone 17
+    /// Pro, iOS 26, AirPods Pro, app backgrounded and locked): both setCategory
+    /// calls threw '!int' (560557684), this call succeeded, and a route change
+    /// (reason categoryChange) moved the output from the AirPods to the speaker.
+    /// The build without it left the alarm in the buds with no route change.
+    /// We do not fully understand why; do not remove it without a device test.
+    /// Returns the note for the error, or nil on success.
+    private func nudgeOutputRoute(_ session: AVAudioSession) -> String? {
+        do {
+            try session.overrideOutputAudioPort(.none)
+            bridgedLog("🔈 ALARM SPEAKER: route nudge (override none) ok")
+            return nil
+        } catch {
+            bridgedLog("⚠️ ALARM SPEAKER: route nudge (override none) failed: \(error.localizedDescription)")
+            return alarmRouteNote("nudge_refused", error)
+        }
     }
 
     /// Polls every 50 ms, at most 1500 ms, until the built-in speaker is in
@@ -1414,6 +1448,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// engineInitLock then engineControlQueue, the order setupAudioEngine
     /// uses; ensureEngineRunning's engineControlQueue.sync is safe here
     /// because this closure never runs on engineControlQueue). Never rejects.
+    ///
+    /// Enabling: category without A2DP, then a route nudge via
+    /// overrideOutputAudioPort(.none), judged by the ACTUAL route, not by
+    /// whether setCategory threw. In the background iOS refused both
+    /// setCategory calls with '!int' and still moved the output to the
+    /// speaker after the nudge (device run, 2026-10-01).
     public func setAlarmSpeakerOnly(enabled: Bool) throws -> Promise<String> {
         let promise = Promise<String>()
 
@@ -1430,7 +1470,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.engineInitLock.lock()
             defer { self.engineInitLock.unlock() }
 
-            // Step 1: a playback-only night keeps today's routing (spec: out of scope).
+            // A playback-only night keeps today's routing (spec: out of scope).
             if self.sessionMode == .playback {
                 self.bridgedLog("🔈 ALARM SPEAKER skipped_playback_session: route unchanged (\(before))")
                 promise.resolve(withResult: self.alarmRouteJSON(
@@ -1438,65 +1478,130 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
 
-            do {
-                // Step 2: set the bool and change the category options in place.
-                // Always runs, even when the output is already the speaker, so a
-                // night with no buds at the first ring still drops A2DP and
-                // AirPods put in during a snooze cannot pull the re-ring into the
-                // buds. Category only, never configurePlayAndRecordSession: on a
-                // device, re-applying setPreferredIOBufferDuration mid-alarm threw
-                // '!int' after the category change had already succeeded.
-                self.alarmSpeakerOnly = enabled
-                try self.setPlayAndRecordCategory(session)
+            // Step errors, in order, for the log and the JSON `notes`.
+            var notes: [String] = []
 
-                // Step 3 (speaker only): the route change is asynchronous, and the
-                // engine config change it triggers stops the engine AFTER this call
-                // would otherwise return. startPlayer does not reject on a stopped
-                // engine (it logs SKIPPED PLAY and resolves), so wait, bounded, for
-                // the speaker to become the route, then drain any recovery the
-                // config change queued. Skipped when the output already was only
-                // the speaker (no route change to wait for).
-                if enabled && !beforeSpeakerOnly {
-                    self.waitForSpeakerRoute(session)
-                    // Recovery runs on engineControlQueue and never takes
-                    // engineInitLock, so this sync under the lock is safe.
-                    self.engineControlQueue.sync {}
-                }
-
-                // Step 4: if an engine exists, make sure it is running. The
-                // alarm-only night has no engine yet; ensureEngineRunning throws
-                // on nil, and the next startPlayer builds the engine with the
-                // bool already honoured, so skip it.
-                if let engine = self.audioEngine {
-                    try self.ensureEngineRunning()
-                    if enabled && !engine.isRunning {
-                        throw RuntimeError.error(withMessage: "Engine not running after the speaker switch")
-                    }
-                } else {
-                    self.bridgedLog("🔈 ALARM SPEAKER: no engine yet, the next startPlayer builds it with speakerOnly=\(enabled)")
-                }
-
-                let outcome = enabled ? "speaker" : "buds_restored"
-                let after = self.currentOutputPortTypes()
-                self.bridgedLog("🔈 ALARM SPEAKER \(outcome): before=\(before) after=\(after)")
-                promise.resolve(withResult: self.alarmRouteJSON(
-                    outcome: outcome, before: before, after: after, error: nil))
-            } catch {
-                // Native fallback, only when a step threw: back to today's
-                // options (with A2DP) so the alarm can at least ring in the buds.
-                // Category only, for the same reason as Step 2.
+            if !enabled {
+                // Restore: today's options (with A2DP), then the same nudge so
+                // iOS re-evaluates the route and can offer the buds again.
                 self.alarmSpeakerOnly = false
                 do {
                     try self.setPlayAndRecordCategory(session)
                 } catch {
-                    self.bridgedLog("⚠️ ALARM SPEAKER: restoring today's session options also failed: \(error.localizedDescription)")
+                    self.bridgedLog("⚠️ ALARM SPEAKER: restore category (A2DP) failed: \(error.localizedDescription)")
+                    notes.append(self.alarmRouteNote("a2dp_category_refused", error))
                 }
-                // The real route after the fallback, so the outcome is honest.
+                if let note = self.nudgeOutputRoute(session) { notes.append(note) }
+
+                var engineStopped = false
+                if let engine = self.audioEngine {
+                    do {
+                        try self.ensureEngineRunning()
+                    } catch {
+                        self.bridgedLog("⚠️ ALARM SPEAKER: ensureEngineRunning after restore failed: \(error.localizedDescription)")
+                        notes.append("engine_restart_failed")
+                    }
+                    engineStopped = !engine.isRunning
+                }
+
                 let after = self.currentOutputPortTypes()
-                self.bridgedLog("❌ ALARM SPEAKER failed: \(error.localizedDescription) (A2DP restored) before=\(before) after=\(after)")
-                promise.resolve(withResult: self.alarmRouteJSON(
-                    outcome: "failed", before: before, after: after, error: error.localizedDescription))
+                if engineStopped {
+                    self.bridgedLog("❌ ALARM SPEAKER failed: engine stopped after restore before=\(before) after=\(after) notes=\(notes)")
+                    promise.resolve(withResult: self.alarmRouteJSON(
+                        outcome: "failed", before: before, after: after,
+                        error: "Engine not running after the restore", notes: notes))
+                } else {
+                    self.bridgedLog("🔈 ALARM SPEAKER buds_restored: before=\(before) after=\(after) notes=\(notes)")
+                    promise.resolve(withResult: self.alarmRouteJSON(
+                        outcome: "buds_restored", before: before, after: after, error: nil, notes: notes))
+                }
+                return
             }
+
+            // Step 1: the bool and the category without A2DP. Category only,
+            // never configurePlayAndRecordSession: on a device, re-applying
+            // setPreferredIOBufferDuration mid-alarm threw '!int'. A refusal is
+            // remembered, not a failure: the route decides (Step 5).
+            self.alarmSpeakerOnly = true
+            var categoryRefused = false
+            do {
+                try self.setPlayAndRecordCategory(session)
+            } catch {
+                categoryRefused = true
+                self.bridgedLog("⚠️ ALARM SPEAKER: category without A2DP refused: \(error.localizedDescription)")
+                notes.append(self.alarmRouteNote("category_refused", error))
+            }
+
+            // Step 2: only when Step 1 threw, try the category WITH A2DP. This
+            // replicates the on-device sequence that produced the speaker route
+            // in the background (2026-10-01); it must not be removed without a
+            // device test. The bool goes back to true straight after.
+            if categoryRefused {
+                self.alarmSpeakerOnly = false
+                do {
+                    try self.setPlayAndRecordCategory(session)
+                } catch {
+                    self.bridgedLog("⚠️ ALARM SPEAKER: category with A2DP refused: \(error.localizedDescription)")
+                    notes.append(self.alarmRouteNote("a2dp_category_refused", error))
+                }
+                self.alarmSpeakerOnly = true
+            }
+
+            // Step 3: always nudge the route (see nudgeOutputRoute).
+            if let note = self.nudgeOutputRoute(session) { notes.append(note) }
+
+            // Step 4: the route change is asynchronous, and the engine config
+            // change it triggers stops the engine AFTER this call would
+            // otherwise return. startPlayer does not reject on a stopped engine
+            // (it logs SKIPPED PLAY and resolves), so wait, bounded, for the
+            // speaker, then drain any recovery the config change queued.
+            // Skipped when the output already was only the speaker.
+            if !beforeSpeakerOnly {
+                self.waitForSpeakerRoute(session)
+                // Recovery runs on engineControlQueue and never takes
+                // engineInitLock, so this sync under the lock is safe.
+                self.engineControlQueue.sync {}
+            }
+            // The alarm-only night has no engine yet; the next startPlayer
+            // builds it with the bool already honoured.
+            var engineStopped = false
+            if let engine = self.audioEngine {
+                do {
+                    try self.ensureEngineRunning()
+                } catch {
+                    self.bridgedLog("⚠️ ALARM SPEAKER: ensureEngineRunning failed: \(error.localizedDescription)")
+                    notes.append("engine_restart_failed")
+                }
+                engineStopped = !engine.isRunning
+            } else {
+                self.bridgedLog("🔈 ALARM SPEAKER: no engine yet, the next startPlayer builds it with speakerOnly=true")
+            }
+
+            // Step 5: judge by the actual route.
+            if self.routeIsSpeakerWithoutA2DP(session) && !engineStopped {
+                let after = self.currentOutputPortTypes()
+                self.bridgedLog("🔈 ALARM SPEAKER speaker: before=\(before) after=\(after) notes=\(notes)")
+                promise.resolve(withResult: self.alarmRouteJSON(
+                    outcome: "speaker", before: before, after: after, error: nil, notes: notes))
+                return
+            }
+
+            // Not on the speaker (or the engine stayed stopped): back to
+            // today's options (with A2DP) so the alarm can at least ring in
+            // the buds. Category only, for the same reason as Step 1.
+            let reason = engineStopped ? "Engine not running after the speaker switch" : "Route is not the speaker"
+            self.alarmSpeakerOnly = false
+            do {
+                try self.setPlayAndRecordCategory(session)
+            } catch {
+                self.bridgedLog("⚠️ ALARM SPEAKER: restoring today's session options also failed: \(error.localizedDescription)")
+                notes.append(self.alarmRouteNote("fallback_category_refused", error))
+            }
+            // The real route after the fallback, so the outcome is honest.
+            let after = self.currentOutputPortTypes()
+            self.bridgedLog("❌ ALARM SPEAKER failed: \(reason) (A2DP restored) before=\(before) after=\(after) notes=\(notes)")
+            promise.resolve(withResult: self.alarmRouteJSON(
+                outcome: "failed", before: before, after: after, error: reason, notes: notes))
         }
 
         return promise

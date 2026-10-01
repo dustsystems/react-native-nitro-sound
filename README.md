@@ -805,18 +805,39 @@ MIT
 ## Alarm speaker route (DUS-2238)
 
 `setAlarmSpeakerOnly(enabled)` pins the overnight engine's output to the iPhone speaker for
-the morning alarm. While the bool is set, `configurePlayAndRecordSession` omits
-`.allowBluetoothA2DP` (so A2DP buds are not offered as routes at all), and `.defaultToSpeaker`
-puts the output on the speaker. The switch changes the category only (`setPlayAndRecordCategory`),
-never the IO buffer duration, channel count or preferred input: on a device, re-applying
-`setPreferredIOBufferDuration` mid-alarm threw `'!int'` after the category change had already
-succeeded. When enabling moves the route, it then polls
-every 50 ms (at most 1500 ms) until the built-in speaker is in the route, drains any recovery
-the configuration change queued (`engineControlQueue.sync {}`) and runs `ensureEngineRunning`
-when an engine exists; an engine that is still stopped is a failure. This wait exists because
-`startPlayer` does not reject on a stopped engine (it logs `SKIPPED PLAY` and resolves).
-Restoring (`enabled: false`) and the failure path set the category again with A2DP.
-`setSessionMode` resets the bool too. It never rejects: it resolves JSON `{ outcome, before, after }` with `outcome` one
-of `speaker`, `buds_restored`, `skipped_playback_session` (a `.playback` session is never
-touched) or `failed` (a step threw and today's options were restored). Both teardown paths
-reset the bool. Grep a device log for `ALARM SPEAKER` to see every outcome.
+the morning alarm. The switch is: the category without A2DP, then a route nudge via
+`overrideOutputAudioPort(.none)`, judged by the actual route.
+
+1. Set the bool and call `setPlayAndRecordCategory` (options without `.allowBluetoothA2DP`, so
+   A2DP buds are not offered as routes; `.defaultToSpeaker` keeps the output off the earpiece).
+   A refusal is logged and kept as a note, not treated as a failure.
+2. Only if step 1 threw: try the category with A2DP once (bool briefly false, then true again).
+   This replicates the device sequence that produced the speaker route and stays until a device
+   test says otherwise.
+3. Always call `overrideOutputAudioPort(.none)` (the route nudge).
+4. When the route was not already speaker-only, poll every 50 ms (at most 1500 ms) for the
+   built-in speaker, drain queued recovery (`engineControlQueue.sync {}`) and run
+   `ensureEngineRunning` when an engine exists (`startPlayer` does not reject on a stopped
+   engine, it logs `SKIPPED PLAY` and resolves).
+5. If the route has the built-in speaker and no Bluetooth A2DP output, and any engine is
+   running, resolve `speaker`. Otherwise clear the bool, set the category with A2DP again and
+   resolve `failed`.
+
+Device evidence (2026-10-01, iPhone 17 Pro, iOS 26, AirPods Pro, app in the background, phone
+locked): both `setCategory` calls threw `'!int'` (560557684), `overrideOutputAudioPort(.none)`
+succeeded, and a route change (reason `categoryChange`) moved the output from the AirPods to
+the speaker. A build without the nudge saw the same two refusals, no route change, and the
+alarm stayed in the buds. We do not fully understand why the nudge works, so the sequence is
+kept exactly as it ran.
+
+The path never touches the IO buffer duration, channel count or preferred input: re-applying
+`setPreferredIOBufferDuration` mid-alarm threw `'!int'` on a device. It never calls
+`overrideOutputAudioPort(.speaker)`.
+
+Restoring (`enabled: false`) clears the bool, sets the category with A2DP, nudges the route the
+same way and resolves `buds_restored` (or `failed` if the engine is left stopped). It never
+rejects: it resolves JSON `{ outcome, before, after, error?, notes? }`, where `notes` lists the
+steps that threw (for example `category_refused:560557684,a2dp_category_refused:560557684`) and
+`outcome` is one of `speaker`, `buds_restored`, `skipped_playback_session` (a `.playback`
+session is never touched) or `failed`. Both teardown paths and `setSessionMode` reset the bool.
+Grep a device log for `ALARM SPEAKER` to see every step and outcome.

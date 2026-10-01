@@ -96,18 +96,18 @@ export interface Sound
   setSessionMode(mode: AudioSessionMode): Promise<void>;
 
   /**
-   * Pin the morning alarm to the iPhone speaker (DUS-2238). While enabled, the
-   * play-and-record session omits the A2DP option, so the alarm rings from the
-   * phone even with Bluetooth buds connected. The switch changes the category
-   * options only. Called by JS on every ring; reset by endEngineSession and
-   * setSessionMode. When enabling moves the route, it waits (at most 1.5 s)
-   * for the speaker to land, drains the engine recovery and requires a live
-   * engine to be running, or it reports `failed`. Never rejects. Resolves JSON
-   * `{ outcome, before, after, error? }` where `before` and `after` are the
-   * output port types read before the call and after the settle wait, and
-   * `outcome` is one of `speaker`, `buds_restored` (enabled: false),
-   * `skipped_playback_session` (the session is playback-only, nothing touched)
-   * or `failed` (a step threw or the engine stayed stopped; today's options
+   * Pin the morning alarm to the iPhone speaker (DUS-2238). Enabling sets the
+   * play-and-record category without the A2DP option, then nudges the route with
+   * overrideOutputAudioPort(.none), and is judged by the ACTUAL route: in the
+   * background iOS can refuse setCategory ('!int') and still re-route to the
+   * speaker after the nudge. Called by JS on every ring; reset by endEngineSession
+   * and setSessionMode. Waits (at most 1.5 s) for the speaker, drains the engine
+   * recovery and requires a live engine to be running. Never rejects. Resolves
+   * JSON `{ outcome, before, after, error?, notes? }` (`before`/`after` are output
+   * port types, `notes` lists step errors such as `category_refused:560557684`),
+   * `outcome` one of `speaker` (built-in speaker, no A2DP output), `buds_restored`
+   * (enabled: false), `skipped_playback_session` (playback-only, nothing touched)
+   * or `failed` (not on the speaker, or the engine stayed stopped; today's options
    * with A2DP were restored).
    */
   setAlarmSpeakerOnly(enabled: boolean): Promise<string>;
