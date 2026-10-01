@@ -48,6 +48,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
     private var sessionMode: EngineSessionMode = .playAndRecord
 
+    // MARK: - Alarm speaker route (DUS-2238)
+    /// While true, configurePlayAndRecordSession omits .allowBluetoothA2DP and
+    /// overrides the output port to the built-in speaker, so the morning alarm
+    /// rings from the iPhone even with Bluetooth buds or wired headphones
+    /// connected. JS flips it through setAlarmSpeakerOnly once per ring; every
+    /// engine build goes through configurePlayAndRecordSession, so an engine
+    /// built or rebuilt while it is true comes up on the speaker too. Read and
+    /// written under engineInitLock like sessionMode; both teardown paths reset
+    /// it under engineControlQueue. Never touched on a .playback session.
+    private var alarmSpeakerOnly = false
+
     // Dual player nodes for crossfading support
     private var audioPlayerNodeA: AVAudioPlayerNode?
     private var audioPlayerNodeB: AVAudioPlayerNode?
@@ -389,9 +400,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Dropping HFP keeps buds in A2DP (high-rate output only), and we take INPUT
         // from the built-in mic instead (pinned below). Sleep buds have no usable mic
         // and AirPods' mic is unhelpful at sleep, so we lose nothing.
-        try audioSession.setCategory(.playAndRecord,
-                                    mode: .default,
-                                    options: [.defaultToSpeaker, .allowBluetoothA2DP, .mixWithOthers])
+        // DUS-2238: while the alarm is pinned to the speaker, A2DP outputs are
+        // not offered as routes at all (Apple: clearing the option removes
+        // paired A2DP devices from the available outputs). .defaultToSpeaker
+        // stays in every case, or output falls to the earpiece.
+        var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
+        if !alarmSpeakerOnly {
+            options.insert(.allowBluetoothA2DP)
+        }
+        try audioSession.setCategory(.playAndRecord, mode: .default, options: options)
         if audioSession.maximumInputNumberOfChannels >= 1 {
             try? audioSession.setPreferredInputNumberOfChannels(1)
         }
@@ -414,6 +431,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
         } else {
             bridgedLog("⚠️ Built-in mic not found in availableInputs — input not pinned")
+        }
+
+        // DUS-2238: wired headphones still beat .defaultToSpeaker, so the port
+        // override is applied every time the session is configured for the
+        // speaker (iOS clears it on the next route change). Logged, never
+        // thrown: an engine build must not fail because of the override, and
+        // omitting A2DP above is already enough for Bluetooth buds.
+        if alarmSpeakerOnly {
+            do {
+                try audioSession.overrideOutputAudioPort(.speaker)
+                bridgedLog("🔈 ALARM SPEAKER: A2DP omitted, output override -> speaker")
+            } catch {
+                bridgedLog("⚠️ ALARM SPEAKER: overrideOutputAudioPort(.speaker) failed: \(error.localizedDescription)")
+            }
         }
     }
 
@@ -1042,7 +1073,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         bridgedLog("│   engine     init=\(engineInit)   running=\(engineRun)")
         bridgedLog("│   recording  segment=\(hasSegment)   buffer=\(bufferCount) chunks")
         bridgedLog("│   playback   loop=\(shouldLoopPlayback)   ambient=\(isAmbientLoopPlaying)")
-        bridgedLog("│   session    \(category) @ \(sampleRate) Hz")
+        bridgedLog("│   session    \(category) @ \(sampleRate) Hz   mode=\(sessionMode.rawValue) speakerOnly=\(alarmSpeakerOnly)")
         bridgedLog("│   route out  \(route.isEmpty ? "—" : route)")
         bridgedLog("│   route in   \(inputRoute.isEmpty ? "—" : inputRoute)")
 
@@ -1263,6 +1294,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // DUS-1956: the next engine opens as today's play-and-record
             // unless JS chooses again. Reset with the engine it described.
             self.sessionMode = .playAndRecord
+            // DUS-2238: the next engine rings on today's route unless JS asks again.
+            self.alarmSpeakerOnly = false
             self.teardownInFlight = false
         }
 
@@ -3608,6 +3641,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             engineRecoveryFailed = false
             // DUS-1956: same reset as endEngineSession.
             sessionMode = .playAndRecord
+            alarmSpeakerOnly = false
             teardownInFlight = false
             bridgedLog("😴🔚 [SC] engine released after sleep-capture disarm (no other consumers)")
         }
