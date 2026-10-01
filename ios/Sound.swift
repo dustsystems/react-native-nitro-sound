@@ -1353,6 +1353,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.engineInitLock.lock()
             defer { self.engineInitLock.unlock() }
 
+            // DUS-2238: setSessionMode runs once per night before any play, so a
+            // teardown that raced a ring switch can never leak speaker-only into
+            // the next night. A live engine keeps its configured session until
+            // the next reconfigure; JS never sets the mode mid-ring.
+            self.alarmSpeakerOnly = false
+
             let previous = self.sessionMode
             if previous == requested {
                 self.bridgedLog("🎚️ SESSION MODE \(requested.rawValue): unchanged (engine initialized=\(self.audioEngineInitialized))")
@@ -1391,6 +1397,31 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return "{\"outcome\":\"\(outcome)\",\"before\":\"\",\"after\":\"\"}"
     }
 
+    /// Clears any output port override (DUS-2238 restore paths). Log-only:
+    /// the restore must never fail because of it.
+    private func clearOutputOverride(_ session: AVAudioSession) {
+        do {
+            try session.overrideOutputAudioPort(.none)
+            bridgedLog("🔈 ALARM SPEAKER: output override cleared")
+        } catch {
+            bridgedLog("⚠️ ALARM SPEAKER: overrideOutputAudioPort(.none) failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// Polls every 50 ms, at most 1500 ms, until the built-in speaker is in
+    /// the current route (DUS-2238). Logs the wait and its result.
+    private func waitForSpeakerRoute(_ session: AVAudioSession) {
+        let start = Date()
+        let limit: TimeInterval = 1.5
+        var landed = session.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
+        while !landed && Date().timeIntervalSince(start) < limit {
+            Thread.sleep(forTimeInterval: 0.05)
+            landed = session.currentRoute.outputs.contains { $0.portType == .builtInSpeaker }
+        }
+        let waitedMs = Int(Date().timeIntervalSince(start) * 1000)
+        bridgedLog("🔈 ALARM SPEAKER route wait: \(landed ? "landed" : "timed_out") after \(waitedMs) ms (outputs=\(currentOutputPortTypes()))")
+    }
+
     /// Pins the morning alarm to the speaker, or restores the buds (DUS-2238).
     /// Same shape as setSessionMode: runs on DispatchQueue.global and holds
     /// engineInitLock so no setupAudioEngine can interleave (lock order
@@ -1407,6 +1438,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
             let session = AVAudioSession.sharedInstance()
             let before = self.currentOutputPortTypes()
+            let beforeOutputs = session.currentRoute.outputs.map { $0.portType }
+            let beforeSpeakerOnly = !beforeOutputs.isEmpty && beforeOutputs.allSatisfy { $0 == .builtInSpeaker }
 
             self.engineInitLock.lock()
             defer { self.engineInitLock.unlock() }
@@ -1426,13 +1459,35 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 // during a snooze cannot pull the re-ring into the buds.
                 self.alarmSpeakerOnly = enabled
                 try self.configurePlayAndRecordSession(session)
+                if !enabled {
+                    // Restore: drop any speaker override this morning left behind,
+                    // so the buds (or wired headphones) get the output back.
+                    self.clearOutputOverride(session)
+                }
 
-                // Step 3: if an engine exists, make sure it is running. The
+                // Step 3 (speaker only): the route change is asynchronous, and the
+                // engine config change it triggers stops the engine AFTER this call
+                // would otherwise return. startPlayer does not reject on a stopped
+                // engine (it logs SKIPPED PLAY and resolves), so wait, bounded, for
+                // the speaker to become the route, then drain any recovery the
+                // config change queued. Skipped when the output already was only
+                // the speaker (no route change to wait for).
+                if enabled && !beforeSpeakerOnly {
+                    self.waitForSpeakerRoute(session)
+                    // Recovery runs on engineControlQueue and never takes
+                    // engineInitLock, so this sync under the lock is safe.
+                    self.engineControlQueue.sync {}
+                }
+
+                // Step 4: if an engine exists, make sure it is running. The
                 // alarm-only night has no engine yet; ensureEngineRunning throws
                 // on nil, and the next startPlayer builds the engine with the
                 // bool already honoured, so skip it.
-                if self.audioEngine != nil {
+                if let engine = self.audioEngine {
                     try self.ensureEngineRunning()
+                    if enabled && !engine.isRunning {
+                        throw RuntimeError.error(withMessage: "Engine not running after the speaker switch")
+                    }
                 } else {
                     self.bridgedLog("🔈 ALARM SPEAKER: no engine yet, the next startPlayer builds it with speakerOnly=\(enabled)")
                 }
@@ -1451,6 +1506,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 } catch {
                     self.bridgedLog("⚠️ ALARM SPEAKER: restoring today's session options also failed: \(error.localizedDescription)")
                 }
+                self.clearOutputOverride(session)
                 let after = self.currentOutputPortTypes()
                 self.bridgedLog("❌ ALARM SPEAKER failed: \(error.localizedDescription) (A2DP restored) before=\(before) after=\(after)")
                 promise.resolve(withResult: self.alarmRouteJSON(

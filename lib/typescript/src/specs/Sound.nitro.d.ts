@@ -89,13 +89,16 @@ export interface Sound extends HybridObject<{
      * play-and-record session omits the A2DP option and overrides the output
      * port to the speaker, so the alarm rings from the phone even with Bluetooth
      * buds or wired headphones connected. Called by JS on every ring; reset by
-     * endEngineSession. Never rejects. Resolves JSON
+     * endEngineSession and setSessionMode. When enabling moves the route, it
+     * waits (at most 1.5 s) for the speaker to land, drains the engine recovery
+     * and requires a live engine to be running, or it reports `failed`.
+     * Restoring also clears the output override. Never rejects. Resolves JSON
      * `{ outcome, before, after, error? }` where `before` and `after` are the
-     * output port types read before and right after the call (the route change
-     * settles asynchronously, so `after` is best-effort) and `outcome` is one of
-     * `speaker`, `buds_restored` (enabled: false), `skipped_playback_session`
-     * (the session is playback-only, nothing touched) or `failed` (a step threw;
-     * today's options with A2DP were restored).
+     * output port types read before the call and after the settle wait, and
+     * `outcome` is one of `speaker`, `buds_restored` (enabled: false),
+     * `skipped_playback_session` (the session is playback-only, nothing touched)
+     * or `failed` (a step threw or the engine stayed stopped; today's options
+     * with A2DP were restored).
      */
     setAlarmSpeakerOnly(enabled: boolean): Promise<string>;
     /**

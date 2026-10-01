@@ -808,9 +808,13 @@ MIT
 the morning alarm. While the bool is set, `configurePlayAndRecordSession` omits
 `.allowBluetoothA2DP` (so A2DP buds are not offered as routes at all) and applies
 `overrideOutputAudioPort(.speaker)` after the built-in mic pin (so wired headphones lose too).
-It reconfigures the live session in place, then runs `ensureEngineRunning` when an engine
-exists; the route change itself restarts the engine through the existing configuration-change
-recovery. It never rejects: it resolves JSON `{ outcome, before, after }` with `outcome` one
+It reconfigures the live session in place. When enabling moves the route, it then polls
+every 50 ms (at most 1500 ms) until the built-in speaker is in the route, drains any recovery
+the configuration change queued (`engineControlQueue.sync {}`) and runs `ensureEngineRunning`
+when an engine exists; an engine that is still stopped is a failure. This wait exists because
+`startPlayer` does not reject on a stopped engine (it logs `SKIPPED PLAY` and resolves).
+Restoring (`enabled: false`) and the failure path clear the override with
+`overrideOutputAudioPort(.none)`. `setSessionMode` resets the bool too. It never rejects: it resolves JSON `{ outcome, before, after }` with `outcome` one
 of `speaker`, `buds_restored`, `skipped_playback_session` (a `.playback` session is never
 touched) or `failed` (a step threw and today's options were restored). Both teardown paths
 reset the bool. Grep a device log for `ALARM SPEAKER` to see every outcome.
