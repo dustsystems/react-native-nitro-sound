@@ -30,11 +30,8 @@ final class AmbientVolumeController {
     private var generation: UInt64 = 0
     private var rampTimer: DispatchSourceTimer?
     private var pendingRampDownCompletion: ((Bool) -> Void)?
-    private let log: (String) -> Void
-
-    init(log: @escaping (String) -> Void) {
-        self.log = log
-    }
+    /// Set once by HybridSound.init, before any other call.
+    var log: (String) -> Void = { _ in }
 
     /// Store a new target. Applied to `node` right away only while the loop
     /// is steady; a running fade-in picks it up on its next step; while
@@ -122,7 +119,16 @@ final class AmbientVolumeController {
                 return
             }
             self.lock.lock()
-            guard self.generation == gen, node.engine != nil else {
+            guard self.generation == gen else {
+                self.lock.unlock()
+                timer.cancel()
+                return
+            }
+            guard node.engine != nil else {
+                // The node lost its engine: this ramp is over, and nothing
+                // is steady until a new loop begins.
+                self.phase = .idle
+                self.rampTimer = nil
                 self.lock.unlock()
                 timer.cancel()
                 return

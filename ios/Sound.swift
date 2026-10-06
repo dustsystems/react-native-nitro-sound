@@ -73,9 +73,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var isAmbientLoopPlaying: Bool = false
     private var currentAmbientFile: AVAudioFile?
     // Node D's target volume and ramps (DUS-2094) — see AmbientVolume.swift
-    private lazy var ambientVolume = AmbientVolumeController { [weak self] message in
-        self?.bridgedLog(message)
-    }
+    private let ambientVolume = AmbientVolumeController()
     private var currentLoopingFileURI: String?
 
     // Track which player is active (for future crossfading)
@@ -284,6 +282,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     override init() {
         super.init()
+        ambientVolume.log = { [weak self] message in
+            self?.bridgedLog(message)
+        }
         setupAudioInterruptionHandling()
     }
 
@@ -3867,6 +3868,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             audioPlayerNodeB = nil
             audioPlayerNodeC = nil
             audioPlayerNodeD = nil
+            ambientVolume.reset()
             currentPlayerNode = nil
             audioEngineInitialized = false
             engineGeneration += 1
@@ -4008,14 +4010,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 newNode.stop()
                 newNode.volume = 0.0
 
-                // Reset position tracking for new track (BEFORE updating currentAudioFile)
-                // This prevents getCurrentPosition() from using mismatched file/node/offset during crossfade
-                self.startingFrameOffset = 0
-                self.lastValidPosition = 0.0
-
-                // Store audio file reference early to ensure it's retained for looping
-                self.currentAudioFile = audioFile
-
                 // Schedule file for playback (double-buffered for seamless looping)
                 if self.shouldLoopPlayback {
                     newNode.scheduleFile(audioFile, at: nil, completionHandler: nil)
@@ -4037,13 +4031,16 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 let newNodeName = self.getNodeName(for: newNode)
                 self.bridgedLog("🎵 CROSSFADE: Node \(currentNodeName) → Node \(newNodeName): \(url.lastPathComponent)")
 
-                // DUS-980: the incoming node becomes current now, not when its
-                // fade-in ends. currentAudioFile and the position offset are
-                // already the new track's, so the play timer, seeks and
-                // getCurrentPosition must read the incoming node too. Reading
-                // the outgoing one paired its play time with the new file:
-                // a long outgoing track tripped end detection, and its stop
-                // at the end of the fade-out looked like the track ending.
+                // DUS-980: the incoming node, its file and a zero offset
+                // become current together, now, not when its fade-in ends.
+                // The play timer, seeks and getCurrentPosition then read the
+                // node that plays currentAudioFile. Reading the outgoing one
+                // paired its play time with the new file: a long outgoing
+                // track tripped end detection, and its stop at the end of the
+                // fade-out looked like the track ending.
+                self.startingFrameOffset = 0
+                self.lastValidPosition = 0.0
+                self.currentAudioFile = audioFile
                 self.currentPlayerNode = newNode
                 self.activePlayer = self.getPlayerEnum(for: newNode)
 
@@ -4053,7 +4050,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 // Start fading
                 if let currentNode = outgoingNode, currentNode !== newNode {
                     self.fadeVolume(node: currentNode, from: currentNode.volume, to: 0.0, duration: fadeDuration) {
-                        // Stop old node when fade out completes
+                        // Stop old node when fade out completes — unless a
+                        // later crossfade already reused it as the current node
+                        guard currentNode !== self.currentPlayerNode else { return }
                         currentNode.stop()
                         currentNode.volume = 0.0  // Ensure volume stays at 0
                     }
