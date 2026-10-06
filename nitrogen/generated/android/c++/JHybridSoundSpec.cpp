@@ -448,6 +448,21 @@ namespace margelo::nitro::sound {
       return __promise;
     }();
   }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::setAmbientVolume(double volume) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(double /* volume */)>("setAmbientVolume");
+    auto __result = method(_javaPart, volume);
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
   void JHybridSoundSpec::addPlayBackListener(const std::function<void(const PlayBackType& /* playbackMeta */)>& callback) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_PlayBackType::javaobject> /* callback */)>("addPlayBackListener_cxx");
     method(_javaPart, JFunc_void_PlayBackType_cxx::fromCpp(callback));

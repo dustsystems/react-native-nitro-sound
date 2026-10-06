@@ -188,6 +188,12 @@ export interface Sound
   // Ambient loop methods
   startAmbientLoop(uri: string, volume: number, fadeDuration?: number): Promise<void>;
   stopAmbientLoop(fadeDuration?: number): Promise<void>;
+  /**
+   * Set the ambient loop's volume (0-1) while it plays. Also the level that
+   * resume and an in-progress fade-in return to; with no loop playing it
+   * only stores it.
+   */
+  setAmbientVolume(volume: number): Promise<void>;
 
   // Listeners
   addPlayBackListener(callback: (playbackMeta: PlayBackType) => void): void;
