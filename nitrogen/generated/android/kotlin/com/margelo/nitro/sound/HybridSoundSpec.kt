@@ -125,6 +125,10 @@ abstract class HybridSoundSpec: HybridObject() {
   @Keep
   abstract fun stopAmbientLoop(fadeDuration: Double?): Promise<Unit>
   
+  @DoNotStrip
+  @Keep
+  abstract fun setAmbientVolume(volume: Double): Promise<Unit>
+  
   abstract fun addPlayBackListener(callback: (playbackMeta: PlayBackType) -> Unit): Unit
   
   @DoNotStrip

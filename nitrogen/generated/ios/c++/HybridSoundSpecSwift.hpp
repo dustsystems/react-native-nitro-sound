@@ -271,6 +271,14 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::shared_ptr<Promise<void>> setAmbientVolume(double volume) override {
+      auto __result = _swiftPart.setAmbientVolume(std::forward<decltype(volume)>(volume));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
     inline void addPlayBackListener(const std::function<void(const PlayBackType& /* playbackMeta */)>& callback) override {
       auto __result = _swiftPart.addPlayBackListener(callback);
       if (__result.hasError()) [[unlikely]] {

@@ -148,6 +148,12 @@ export interface Sound extends HybridObject<{
     fadeVolumeTo(targetVolume: number, duration: number): Promise<void>;
     startAmbientLoop(uri: string, volume: number, fadeDuration?: number): Promise<void>;
     stopAmbientLoop(fadeDuration?: number): Promise<void>;
+    /**
+     * Set the ambient loop's volume (0-1) while it plays. Also the level that
+     * resume and an in-progress fade-in return to; with no loop playing it
+     * only stores it.
+     */
+    setAmbientVolume(volume: number): Promise<void>;
     addPlayBackListener(callback: (playbackMeta: PlayBackType) => void): void;
     removePlayBackListener(): void;
     addPlaybackEndListener(callback: (playbackEndMeta: PlaybackEndType) => void): void;
