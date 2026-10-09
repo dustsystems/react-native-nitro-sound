@@ -155,6 +155,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var tapInstallTime: Date?  // When tap was installed (for throttling after 30 minutes)
     private var isTapLoggingThrottled: Bool = false  // Whether we've switched to 15-minute logging intervals
 
+    // Output-side liveness monitor (DUS-1756). It observes playback from the
+    // engine-control queue, never from the Core Audio render thread, so an
+    // overnight engine can prove its output is alive independently of the mic tap.
+    private let outputMonitorInterval: TimeInterval = 15 * 60
+    private var outputMonitorTimer: DispatchSourceTimer?
+    private var outputMonitorStartTime: Date?
+    private var lastOutputMonitorHostTime: UInt64?
+
     // DISABLED: VAD properties
     // private var vadManager: VadManager?
     // private var vadStreamState: VadStreamState?
@@ -1042,6 +1050,85 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         isTapLoggingThrottled = false
     }
 
+    // MARK: - Output Monitor (logs player render activity off the render thread)
+
+    private func startOutputMonitor() {
+        dispatchPrecondition(condition: .onQueue(engineControlQueue))
+        stopOutputMonitor()
+
+        outputMonitorStartTime = Date()
+        lastOutputMonitorHostTime = activeOutputPlayerNode()?
+            .lastRenderTime
+            .flatMap { $0.isHostTimeValid ? $0.hostTime : nil }
+
+        let timer = DispatchSource.makeTimerSource(queue: engineControlQueue)
+        timer.schedule(deadline: .now() + outputMonitorInterval, repeating: outputMonitorInterval)
+        timer.setEventHandler { [weak self] in
+            self?.logOutputMonitorBeat()
+        }
+        outputMonitorTimer = timer
+        timer.resume()
+    }
+
+    private func stopOutputMonitor() {
+        dispatchPrecondition(condition: .onQueue(engineControlQueue))
+        outputMonitorTimer?.cancel()
+        outputMonitorTimer = nil
+        outputMonitorStartTime = nil
+        lastOutputMonitorHostTime = nil
+    }
+
+    private func logOutputMonitorBeat() {
+        dispatchPrecondition(condition: .onQueue(engineControlQueue))
+
+        guard let playerNode = activeOutputPlayerNode() else {
+            stopOutputMonitor()
+            return
+        }
+
+        let elapsedMinutes = outputMonitorStartTime.map {
+            Int(Date().timeIntervalSince($0) / 60.0)
+        } ?? 0
+        let track = outputMonitorTrackDescription(for: playerNode)
+        let engineRunning = audioEngine?.isRunning ?? false
+
+        guard let nodeTime = playerNode.lastRenderTime, nodeTime.isHostTimeValid else {
+            bridgedLog("⚠️ OUTPUT STALLED | \(track) | engine running=\(engineRunning) | node playing=true | rendered: unavailable | elapsed: \(elapsedMinutes)min")
+            return
+        }
+
+        let hostTime = nodeTime.hostTime
+        let advanced = lastOutputMonitorHostTime.map { hostTime > $0 } ?? true
+        lastOutputMonitorHostTime = hostTime
+
+        if advanced {
+            bridgedLog("🔁 OUTPUT ACTIVE | \(track) | engine running=\(engineRunning) | node playing=true | render clock advanced | elapsed: \(elapsedMinutes)min")
+        } else {
+            bridgedLog("⚠️ OUTPUT STALLED | \(track) | engine running=\(engineRunning) | node playing=true | render clock unchanged | elapsed: \(elapsedMinutes)min")
+        }
+    }
+
+    private func activeOutputPlayerNode() -> AVAudioPlayerNode? {
+        [currentPlayerNode, audioPlayerNodeA, audioPlayerNodeB, audioPlayerNodeC]
+            .compactMap { $0 }
+            .first { $0.isPlaying }
+    }
+
+    private func outputMonitorTrackDescription(for playerNode: AVAudioPlayerNode) -> String {
+        guard let uri = currentPlaybackURI else { return "unknown track" }
+        let filename = URL(string: uri)?.lastPathComponent
+            ?? URL(fileURLWithPath: uri).lastPathComponent
+        // Expo downloads a bundled asset to ExponentAsset-<hash>.caf, so the
+        // source filename is available only in development. The silent
+        // keep-alive is the app's only zero-volume looping CAF, whether it
+        // arrives under that cached name or as silent.caf.
+        if filename == "silent.caf"
+            || (shouldLoopPlayback && playerNode.volume == 0 && filename.hasSuffix(".caf")) {
+            return "silent loop playing (keep-alive)"
+        }
+        return "\(filename) \(shouldLoopPlayback ? "loop" : "playing")"
+    }
+
     // MARK: - Debug Helpers
 
     /// Input sample rate for diagnostics. A playback session (DUS-1956) has no
@@ -1270,6 +1357,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         self.engineControlQueue.sync {
             // Step 4: Stop the audio engine
             self.engineStartedForSleepCapture = false
+            self.stopOutputMonitor()
             if let engine = self.audioEngine, engine.isRunning {
                 engine.stop()
                 self.bridgedLog("🔴 AUDIO ENGINE STOPPED")
@@ -2062,6 +2150,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             if let playerNode = self.currentPlayerNode {
                 if !playerNode.isPlaying {
                     playerNode.play()
+                    self.engineControlQueue.async {
+                        self.startOutputMonitor()
+                    }
                     self.updateNowPlayingPlaybackState(isPlaying: true)
                     DispatchQueue.main.async {
                         self.startPlayTimer()
@@ -2085,6 +2176,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             if let playerNode = self.currentPlayerNode {
                 if playerNode.isPlaying {
                     playerNode.pause()
+                    self.engineControlQueue.async {
+                        self.stopOutputMonitor()
+                    }
                     self.stopPlayTimer()
                     self.updateNowPlayingPlaybackState(isPlaying: false)
                     // Notify JS/UI that pause was triggered from lock screen
@@ -2105,12 +2199,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             if let playerNode = self.currentPlayerNode {
                 if playerNode.isPlaying {
                     playerNode.pause()
+                    self.engineControlQueue.async {
+                        self.stopOutputMonitor()
+                    }
                     self.stopPlayTimer()
                     self.updateNowPlayingPlaybackState(isPlaying: false)
                     // Notify JS/UI that pause was triggered from lock screen/headphones
                     self.pauseCallback?()
                 } else {
                     playerNode.play()
+                    self.engineControlQueue.async {
+                        self.startOutputMonitor()
+                    }
                     self.updateNowPlayingPlaybackState(isPlaying: true)
                     DispatchQueue.main.async {
                         self.startPlayTimer()
@@ -2488,6 +2588,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     // and the play are not atomic with a teardown on another queue.
                     if let engine = playerNode.engine, engine.isRunning {
                         playerNode.play()
+                        self.engineControlQueue.async {
+                            self.startOutputMonitor()
+                        }
                         self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
                     } else {
                         self.bridgedLog("⚠️ SKIPPED PLAY — engine torn down before main-queue play (Node \(self.getNodeName(for: playerNode)))")
@@ -2652,6 +2755,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let promise = Promise<String>()
 
         self.bridgedLog("🛑 STOPPING Node \(self.getNodeName(for: self.currentPlayerNode)) (stopPlayer called)")
+        self.engineControlQueue.async { [weak self] in
+            self?.stopOutputMonitor()
+        }
 
         // Cancel loop crossfade timer
         self.loopCrossfadeTimer?.cancel()
@@ -2707,6 +2813,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         if let playerNode = self.currentPlayerNode {
             playerNode.pause()
+            self.engineControlQueue.async { [weak self] in
+                self?.stopOutputMonitor()
+            }
 
             // Also pause ambient loop if playing (uses dedicated Player D)
             // Use micro-fade to avoid audio click. The target volume is kept
@@ -2737,6 +2846,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         if let playerNode = self.currentPlayerNode {
             playerNode.play()
+            self.engineControlQueue.async { [weak self] in
+                self?.startOutputMonitor()
+            }
 
             // Also resume ambient loop if it was playing (uses dedicated Player D)
             // Use micro-fade to avoid audio click
@@ -3852,6 +3964,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         engineControlQueue.sync {
             teardownInFlight = true
             engineStartedForSleepCapture = false
+            stopOutputMonitor()
             if let engine = audioEngine, engine.isRunning {
                 engine.stop()
                 bridgedLog("🔴 AUDIO ENGINE STOPPED (sleep-capture release)")
@@ -4026,6 +4139,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 }
 
                 newNode.play()
+                self.engineControlQueue.async {
+                    self.startOutputMonitor()
+                }
                 let outgoingNode = self.currentPlayerNode
                 let currentNodeName = self.getNodeName(for: outgoingNode)
                 let newNodeName = self.getNodeName(for: newNode)
@@ -4043,6 +4159,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 self.currentAudioFile = audioFile
                 self.currentPlayerNode = newNode
                 self.activePlayer = self.getPlayerEnum(for: newNode)
+                self.currentPlaybackURI = uri
 
                 // DON'T schedule loop timer here - defer until after crossfade completes
                 // This prevents race conditions between main and loop crossfades
@@ -4537,6 +4654,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         playTimer?.invalidate()
         crossfadeTimer?.invalidate()
         loopCrossfadeTimer?.cancel()
+        outputMonitorTimer?.cancel()
 
         // Cleanup unified audio engine if needed (never the input node of a
         // playback session, DUS-1956)
