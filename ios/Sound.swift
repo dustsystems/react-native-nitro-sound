@@ -3482,6 +3482,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     // kAFAssistantErrorDomain 1110 is "No speech detected": a silent file,
                     // not a failure. Any other error is the recognizer failing; report it.
                     if error.domain == "kAFAssistantErrorDomain" && error.code == 1110 {
+                        self.bridgedLog("ℹ️ SFSpeech file transcription: no speech (kAFAssistantErrorDomain 1110)")
                         settleOnce { promise.resolve(withResult: "No Speech Detected") }
                     } else {
                         self.bridgedLog("⚠️ SFSpeech file transcription failed: \(error.domain) \(error.code)")
