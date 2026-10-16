@@ -3423,13 +3423,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
 
             // Create recognizer
+            // Rejection messages are a fixed, parseable form the app turns into telemetry
+            // codes (DUS-2610). Never put transcript text or file paths in them.
             guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")) else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Speech recognizer unavailable"))
+                promise.reject(withError: RuntimeError.error(withMessage: "recognizer_unavailable reason=unsupported_locale"))
                 return
             }
 
             guard recognizer.isAvailable else {
-                promise.reject(withError: RuntimeError.error(withMessage: "Speech recognizer not available"))
+                promise.reject(withError: RuntimeError.error(withMessage: "recognizer_unavailable reason=not_available"))
                 return
             }
             
@@ -3476,8 +3478,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // Start recognition task
             recognizer.recognitionTask(with: request) { result, error in
-                if error != nil {
-                    settleOnce { promise.resolve(withResult: "No Speech Detected") }
+                if let error = error as NSError? {
+                    // kAFAssistantErrorDomain 1110 is "No speech detected": a silent file,
+                    // not a failure. Any other error is the recognizer failing; report it.
+                    if error.domain == "kAFAssistantErrorDomain" && error.code == 1110 {
+                        settleOnce { promise.resolve(withResult: "No Speech Detected") }
+                    } else {
+                        self.bridgedLog("⚠️ SFSpeech file transcription failed: \(error.domain) \(error.code)")
+                        settleOnce {
+                            promise.reject(withError: RuntimeError.error(withMessage: "sfspeech_error domain=\(error.domain) code=\(error.code)"))
+                        }
+                    }
                     return
                 }
 
