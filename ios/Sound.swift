@@ -747,23 +747,32 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         // Extract interruption reason (iOS 14.5+)
         var reasonString = "unknown"
+        // The same reason as a stable token for the JS trail step (never the prose above).
+        var reasonCode = "unknown"
         if #available(iOS 14.5, *) {
             if let reasonValue = userInfo[AVAudioSessionInterruptionReasonKey] as? UInt,
                let reason = AVAudioSession.InterruptionReason(rawValue: reasonValue) {
                 switch reason {
                 case .default:
                     reasonString = "default (another audio session)"
+                    reasonCode = "other_session"
                 case .appWasSuspended:
                     reasonString = "app was suspended by system"
+                    reasonCode = "app_suspended"
                 case .builtInMicMuted:
                     reasonString = "built-in mic muted (iPad)"
+                    reasonCode = "mic_muted"
                 @unknown default:
                     reasonString = "unknown (\(reasonValue))"
+                    reasonCode = "unknown"
                 }
             }
         }
 
         let timestamp = formattedTimestamp()
+        // Wall-clock ms for the JS trail step: the engine event hops the main queue and the JS
+        // thread, so the receive time can land after the audible check this interruption explains.
+        let nowMs = Int64((Date().timeIntervalSince1970 * 1000).rounded())
 
         if type == .began {
             // Generate new interruption ID and record start time
@@ -778,15 +787,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("║  Reason:    \(reasonString)")
             bridgedLog("╚════════════════════════════════════════════════════════════════╝")
             logStateSnapshot(context: "interruption-began")
+            // Night outcome evidence: JS records this as the `audio_interrupted` trail step, so
+            // a ring that another session cut off at the alarm minute is classified, not guessed.
+            emitEngineEvent("audioInterruptionBegan", "reason=\(reasonCode);at_ms=\(nowMs)")
 
         } else if type == .ended {
             let shouldResume = (userInfo[AVAudioSessionInterruptionOptionKey] as? UInt) == AVAudioSession.InterruptionOptions.shouldResume.rawValue
 
             // Calculate duration
             var durationString = "unknown"
+            var durationMs = -1
             if let startTime = interruptionStartTime {
                 let duration = Date().timeIntervalSince(startTime)
                 durationString = String(format: "%.2fs", duration)
+                durationMs = Int((duration * 1000).rounded())
             }
 
             bridgedLog("╔════════════════════════════════════════════════════════════════╗")
@@ -799,6 +813,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("║  Should Resume: \(shouldResume)")
             bridgedLog("╚════════════════════════════════════════════════════════════════╝")
             logStateSnapshot(context: "interruption-ended")
+            // Night outcome evidence: the `audio_interruption_ended` trail step. The duration is how
+            // long the other session held the speaker (an AlarmKit alert, a call, a Clock alarm).
+            // iOS sends the reason only with `began`, so the ended event carries none.
+            emitEngineEvent(
+                "audioInterruptionEnded",
+                "duration_ms=\(durationMs);should_resume=\(shouldResume);at_ms=\(nowMs)"
+            )
 
             // Attempt engine restart if shouldResume is true. Routes through
             // ensureEngineRunning() — the shared repair-or-start entry point (DUS-1714 review) —
