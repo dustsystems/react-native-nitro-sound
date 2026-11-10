@@ -932,6 +932,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             let inputNode = engine.inputNode
             let hwFormat = inputNode.outputFormat(forBus: 0)
+            // Sleep-capture already refuses a zero-rate/zero-channel format
+            // before touching the tap (ensureEngineAndTapForSleepCapture).
+            // The recorder path did not, so a mid-setup route change that
+            // left sampleRate 0 reached AVFoundation and trapped (DUS-1753).
+            guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
+                throw RuntimeError.error(withMessage: "Audio input unavailable (format \(hwFormat))")
+            }
 
             // Set default output directory if needed
             if outputDirectory == nil {
@@ -969,14 +976,33 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Install tap - RT-SAFE: copy-only, no processing, NO LOGGING
             // (Logging from RT audio thread can cause glitches via memory allocation & GCD locks)
             // Only RT-safe operations: increment counter + buffer writes.
-            // Remove-then-install under tapControlQueue: any existing tap
-            // (a previous recorder tap, or one sleep capture's keep-alive
-            // installed) is replaced atomically with the same shared block.
+            // Under tapControlQueue the recorder always removes then installs,
+            // so a previous recorder tap or keep-alive is replaced with the
+            // same shared block. Both AVFoundation calls run inside
+            // ObjCExceptionCatcher (an NSException is not catchable from
+            // Swift, DUS-1714 / DUS-1753), and because removal does not depend
+            // on isInputTapInstalled, a stale flag cannot wedge recording.
+            var installError: Error?
             tapControlQueue.sync {
-                inputNode.removeTap(onBus: 0)
-                inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat, block: makeInputTapBlock())
-                isInputTapInstalled = true
-                tapOwnedByRecorder = true
+                do {
+                    try ObjCExceptionCatcher.installTap(
+                        on: inputNode,
+                        bus: 0,
+                        bufferSize: 1024,
+                        format: hwFormat,
+                        block: makeInputTapBlock(),
+                        removeFirst: true
+                    )
+                    isInputTapInstalled = true
+                    tapOwnedByRecorder = true
+                } catch {
+                    isInputTapInstalled = false
+                    tapOwnedByRecorder = false
+                    installError = error
+                }
+            }
+            if let installError {
+                throw installError
             }
 
             // Start tap monitor timer - logs every 5 seconds to confirm tap is receiving data
@@ -3828,12 +3854,27 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         guard hwFormat.sampleRate > 0, hwFormat.channelCount > 0 else {
             throw RuntimeError.error(withMessage: "Audio input unavailable (format \(hwFormat))")
         }
+        var installError: Error?
         tapControlQueue.sync {
             if !isInputTapInstalled {
-                engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hwFormat, block: makeInputTapBlock())
-                isInputTapInstalled = true
-                bridgedLog("🎙️🟠 TAP INSTALLED (sleep capture keep-alive)")
+                do {
+                    try ObjCExceptionCatcher.installTap(
+                        on: engine.inputNode,
+                        bus: 0,
+                        bufferSize: 1024,
+                        format: hwFormat,
+                        block: makeInputTapBlock(),
+                        removeFirst: false
+                    )
+                    isInputTapInstalled = true
+                    bridgedLog("🎙️🟠 TAP INSTALLED (sleep capture keep-alive)")
+                } catch {
+                    installError = error
+                }
             }
+        }
+        if let installError {
+            throw installError
         }
         return hwFormat
     }
@@ -3851,9 +3892,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 if !isInputTapInstalled, sessionMode == .playAndRecord, let engine = audioEngine {
                     let hw = engine.inputNode.outputFormat(forBus: 0)
                     if hw.sampleRate > 0, hw.channelCount > 0 {
-                        engine.inputNode.installTap(onBus: 0, bufferSize: 1024, format: hw, block: makeInputTapBlock())
-                        isInputTapInstalled = true
-                        bridgedLog("🎙️🟠 TAP REINSTALLED at arm (was removed in the ensure→arm window)")
+                        do {
+                            try ObjCExceptionCatcher.installTap(
+                                on: engine.inputNode,
+                                bus: 0,
+                                bufferSize: 1024,
+                                format: hw,
+                                block: makeInputTapBlock(),
+                                removeFirst: false
+                            )
+                            isInputTapInstalled = true
+                            bridgedLog("🎙️🟠 TAP REINSTALLED at arm (was removed in the ensure→arm window)")
+                        } catch {
+                            bridgedLog("⚠️ TAP REINSTALL at arm failed: \(error.localizedDescription)")
+                        }
                     }
                 }
             } else if isInputTapInstalled, !tapOwnedByRecorder, !isCommandRecognitionActive {

@@ -24,6 +24,25 @@ NS_ASSUME_NONNULL_BEGIN
                    engine:(AVAudioEngine *)engine
                     error:(NSError **)error NS_SWIFT_NAME(reconnectPlayers(_:engine:));
 
+/// Installs a tap on `node`'s `bus`, optionally removing an existing tap first —
+/// entirely in Objective-C, inside `@try/@catch`.
+///
+/// Same reason as `reconnectPlayers:engine:`: `removeTapOnBus:` / `installTapOnBus:…`
+/// raise `NSException` on a bad graph (tap already installed, invalid/zero format,
+/// node not in the engine), and Swift `do/catch` cannot see those. The tap `block`
+/// may be a Swift closure; the exception is at install time, not inside the block.
+/// Do not wrap a Swift closure in a `tryBlock` — DUS-1714 proved that still traps
+/// (`EXC_BREAKPOINT`). Returns `YES` on success. On `NO`, `*error` is an
+/// `NSError` built from the caught `NSException` (domain `ObjCException`).
++ (BOOL)installTapOnNode:(AVAudioNode *)node
+                   onBus:(AVAudioNodeBus)bus
+              bufferSize:(AVAudioFrameCount)bufferSize
+                  format:(nullable AVAudioFormat *)format
+                   block:(AVAudioNodeTapBlock)block
+             removeFirst:(BOOL)removeFirst
+                   error:(NSError **)error
+    NS_SWIFT_NAME(installTap(on:bus:bufferSize:format:block:removeFirst:));
+
 @end
 
 NS_ASSUME_NONNULL_END
