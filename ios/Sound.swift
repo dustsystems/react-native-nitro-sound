@@ -976,12 +976,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Install tap - RT-SAFE: copy-only, no processing, NO LOGGING
             // (Logging from RT audio thread can cause glitches via memory allocation & GCD locks)
             // Only RT-safe operations: increment counter + buffer writes.
-            // Under tapControlQueue: skip removeTap when none exists (sleep-
-            // capture's isInputTapInstalled guard); otherwise remove-then-
-            // install so a previous recorder tap or keep-alive is replaced
-            // with the same shared block. Both AVFoundation calls run in
-            // ObjCExceptionCatcher — an NSException is not catchable from
-            // Swift (DUS-1714 / DUS-1753).
+            // Under tapControlQueue the recorder always removes then installs,
+            // so a previous recorder tap or keep-alive is replaced with the
+            // same shared block. Both AVFoundation calls run inside
+            // ObjCExceptionCatcher (an NSException is not catchable from
+            // Swift, DUS-1714 / DUS-1753), and because removal does not depend
+            // on isInputTapInstalled, a stale flag cannot wedge recording.
             var installError: Error?
             tapControlQueue.sync {
                 do {
@@ -991,7 +991,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                         bufferSize: 1024,
                         format: hwFormat,
                         block: makeInputTapBlock(),
-                        removeFirst: isInputTapInstalled
+                        removeFirst: true
                     )
                     isInputTapInstalled = true
                     tapOwnedByRecorder = true
