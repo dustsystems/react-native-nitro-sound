@@ -43,6 +43,14 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
+  abstract fun setSessionMode(mode: AudioSessionMode): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun setAlarmSpeakerOnly(enabled: Boolean): Promise<String>
+  
+  @DoNotStrip
+  @Keep
   abstract fun beginRecording(maxDurationSeconds: Double): Promise<Unit>
   
   @DoNotStrip
@@ -116,6 +124,10 @@ abstract class HybridSoundSpec: HybridObject() {
   @DoNotStrip
   @Keep
   abstract fun stopAmbientLoop(fadeDuration: Double?): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun setAmbientVolume(volume: Double): Promise<Unit>
   
   abstract fun addPlayBackListener(callback: (playbackMeta: PlayBackType) -> Unit): Unit
   

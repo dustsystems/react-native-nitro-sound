@@ -12,12 +12,15 @@
 // Forward declaration of `HybridSoundSpec_cxx` to properly resolve imports.
 namespace NitroSound { class HybridSoundSpec_cxx; }
 
+// Forward declaration of `AudioSessionMode` to properly resolve imports.
+namespace margelo::nitro::sound { enum class AudioSessionMode; }
 // Forward declaration of `PlayBackType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlayBackType; }
 // Forward declaration of `PlaybackEndType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlaybackEndType; }
 
 #include <NitroModules/Promise.hpp>
+#include "AudioSessionMode.hpp"
 #include <string>
 #include <optional>
 #include <unordered_map>
@@ -94,6 +97,22 @@ namespace margelo::nitro::sound {
     }
     inline std::shared_ptr<Promise<void>> endEngineSession() override {
       auto __result = _swiftPart.endEngineSession();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<void>> setSessionMode(AudioSessionMode mode) override {
+      auto __result = _swiftPart.setSessionMode(static_cast<int>(mode));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<std::string>> setAlarmSpeakerOnly(bool enabled) override {
+      auto __result = _swiftPart.setAlarmSpeakerOnly(std::forward<decltype(enabled)>(enabled));
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }
@@ -246,6 +265,14 @@ namespace margelo::nitro::sound {
     }
     inline std::shared_ptr<Promise<void>> stopAmbientLoop(std::optional<double> fadeDuration) override {
       auto __result = _swiftPart.stopAmbientLoop(fadeDuration);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<void>> setAmbientVolume(double volume) override {
+      auto __result = _swiftPart.setAmbientVolume(std::forward<decltype(volume)>(volume));
       if (__result.hasError()) [[unlikely]] {
         std::rethrow_exception(__result.error());
       }

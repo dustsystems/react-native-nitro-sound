@@ -17,6 +17,8 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("startRecorder", &HybridSoundSpec::startRecorder);
       prototype.registerHybridMethod("stopRecorder", &HybridSoundSpec::stopRecorder);
       prototype.registerHybridMethod("endEngineSession", &HybridSoundSpec::endEngineSession);
+      prototype.registerHybridMethod("setSessionMode", &HybridSoundSpec::setSessionMode);
+      prototype.registerHybridMethod("setAlarmSpeakerOnly", &HybridSoundSpec::setAlarmSpeakerOnly);
       prototype.registerHybridMethod("beginRecording", &HybridSoundSpec::beginRecording);
       prototype.registerHybridMethod("endRecording", &HybridSoundSpec::endRecording);
       prototype.registerHybridMethod("isSegmentRecording", &HybridSoundSpec::isSegmentRecording);
@@ -36,6 +38,7 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("fadeVolumeTo", &HybridSoundSpec::fadeVolumeTo);
       prototype.registerHybridMethod("startAmbientLoop", &HybridSoundSpec::startAmbientLoop);
       prototype.registerHybridMethod("stopAmbientLoop", &HybridSoundSpec::stopAmbientLoop);
+      prototype.registerHybridMethod("setAmbientVolume", &HybridSoundSpec::setAmbientVolume);
       prototype.registerHybridMethod("addPlayBackListener", &HybridSoundSpec::addPlayBackListener);
       prototype.registerHybridMethod("removePlayBackListener", &HybridSoundSpec::removePlayBackListener);
       prototype.registerHybridMethod("addPlaybackEndListener", &HybridSoundSpec::addPlaybackEndListener);

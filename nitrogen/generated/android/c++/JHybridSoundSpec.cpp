@@ -7,6 +7,8 @@
 
 #include "JHybridSoundSpec.hpp"
 
+// Forward declaration of `AudioSessionMode` to properly resolve imports.
+namespace margelo::nitro::sound { enum class AudioSessionMode; }
 // Forward declaration of `PlayBackType` to properly resolve imports.
 namespace margelo::nitro::sound { struct PlayBackType; }
 // Forward declaration of `PlaybackEndType` to properly resolve imports.
@@ -17,6 +19,8 @@ namespace margelo::nitro::sound { struct PlaybackEndType; }
 #include <NitroModules/JUnit.hpp>
 #include <string>
 #include <vector>
+#include "AudioSessionMode.hpp"
+#include "JAudioSessionMode.hpp"
 #include <optional>
 #include <unordered_map>
 #include "PlayBackType.hpp"
@@ -103,6 +107,37 @@ namespace margelo::nitro::sound {
       auto __promise = Promise<void>::create();
       __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
         __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::setSessionMode(AudioSessionMode mode) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<JAudioSessionMode> /* mode */)>("setSessionMode");
+    auto __result = method(_javaPart, JAudioSessionMode::fromCpp(mode));
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  std::shared_ptr<Promise<std::string>> JHybridSoundSpec::setAlarmSpeakerOnly(bool enabled) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jboolean /* enabled */)>("setAlarmSpeakerOnly");
+    auto __result = method(_javaPart, enabled);
+    return [&]() {
+      auto __promise = Promise<std::string>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& __boxedResult) {
+        auto __result = jni::static_ref_cast<jni::JString>(__boxedResult);
+        __promise->resolve(__result->toStdString());
       });
       __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
         jni::JniException __jniError(__throwable);
@@ -401,6 +436,21 @@ namespace margelo::nitro::sound {
   std::shared_ptr<Promise<void>> JHybridSoundSpec::stopAmbientLoop(std::optional<double> fadeDuration) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JDouble> /* fadeDuration */)>("stopAmbientLoop");
     auto __result = method(_javaPart, fadeDuration.has_value() ? jni::JDouble::valueOf(fadeDuration.value()) : nullptr);
+    return [&]() {
+      auto __promise = Promise<void>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {
+        __promise->resolve();
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
+  std::shared_ptr<Promise<void>> JHybridSoundSpec::setAmbientVolume(double volume) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(double /* volume */)>("setAmbientVolume");
+    auto __result = method(_javaPart, volume);
     return [&]() {
       auto __promise = Promise<void>::create();
       __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& /* unit */) {

@@ -45,6 +45,14 @@ export interface PlaybackEndType {
 }
 export type PlayBackListener = (playbackMeta: PlayBackType) => void;
 export type PlaybackEndListener = (playbackEndMeta: PlaybackEndType) => void;
+/**
+ * The overnight engine's audio session category (playback-only journey,
+ * DUS-1956). 'playAndRecord' is the default and today's engine: microphone
+ * input, the overnight tap, sleep talking, voice commands. 'playback' opens no
+ * input at all: iOS shows no orange microphone indicator and Bluetooth buds
+ * stay on the stereo A2DP route.
+ */
+export type AudioSessionMode = 'playback' | 'playAndRecord';
 export interface Sound extends HybridObject<{
     ios: 'swift';
     android: 'kotlin';
@@ -64,6 +72,34 @@ export interface Sound extends HybridObject<{
      * indicator disappears and all audio resources are released.
      */
     endEngineSession(): Promise<void>;
+    /**
+     * Choose the audio session category the engine opens with (DUS-1956).
+     * Chosen once per night, before the first startPlayer or startAmbientLoop;
+     * it sticks until endEngineSession, which resets it to 'playAndRecord'.
+     * The same mode again is a no-op. If an engine is already running with the
+     * other category it is torn down first (the full endEngineSession teardown)
+     * and the next play rebuilds it; it is never silently reused.
+     * While the mode is 'playback', startRecorder, beginRecording,
+     * startCommandRecognition and startSleepCapture reject with an error whose
+     * message starts with PLAYBACK_SESSION_NO_INPUT.
+     */
+    setSessionMode(mode: AudioSessionMode): Promise<void>;
+    /**
+     * Pin the morning alarm to the iPhone speaker (DUS-2238). Enabling sets the
+     * play-and-record category without the A2DP option, then nudges the route with
+     * overrideOutputAudioPort(.none), and is judged by the ACTUAL route: in the
+     * background iOS can refuse setCategory ('!int') and still re-route to the
+     * speaker after the nudge. Called by JS on every ring; reset by endEngineSession
+     * and setSessionMode. Waits (at most 1.5 s) for the speaker, drains the engine
+     * recovery and requires a live engine to be running. Never rejects. Resolves
+     * JSON `{ outcome, before, after, error?, notes? }` (`before`/`after` are output
+     * port types, `notes` lists step errors such as `category_refused:560557684`),
+     * `outcome` one of `speaker` (built-in speaker, no A2DP output), `buds_restored`
+     * (enabled: false), `skipped_playback_session` (playback-only, nothing touched)
+     * or `failed` (not on the speaker, or the engine stayed stopped; today's options
+     * with A2DP were restored).
+     */
+    setAlarmSpeakerOnly(enabled: boolean): Promise<string>;
     /**
      * Begin recording with a maximum duration.
      * Recording automatically stops when the duration is reached.
@@ -112,6 +148,12 @@ export interface Sound extends HybridObject<{
     fadeVolumeTo(targetVolume: number, duration: number): Promise<void>;
     startAmbientLoop(uri: string, volume: number, fadeDuration?: number): Promise<void>;
     stopAmbientLoop(fadeDuration?: number): Promise<void>;
+    /**
+     * Set the ambient loop's volume (0-1) while it plays. Also the level that
+     * resume and an in-progress fade-in return to; with no loop playing it
+     * only stores it.
+     */
+    setAmbientVolume(volume: number): Promise<void>;
     addPlayBackListener(callback: (playbackMeta: PlayBackType) => void): void;
     removePlayBackListener(): void;
     addPlaybackEndListener(callback: (playbackEndMeta: PlaybackEndType) => void): void;

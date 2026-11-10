@@ -16,6 +16,8 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func startRecorder() throws -> Promise<Void>
   func stopRecorder() throws -> Promise<Void>
   func endEngineSession() throws -> Promise<Void>
+  func setSessionMode(mode: AudioSessionMode) throws -> Promise<Void>
+  func setAlarmSpeakerOnly(enabled: Bool) throws -> Promise<String>
   func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void>
   func endRecording() throws -> Promise<Void>
   func isSegmentRecording() throws -> Promise<Bool>
@@ -35,6 +37,7 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func fadeVolumeTo(targetVolume: Double, duration: Double) throws -> Promise<Void>
   func startAmbientLoop(uri: String, volume: Double, fadeDuration: Double?) throws -> Promise<Void>
   func stopAmbientLoop(fadeDuration: Double?) throws -> Promise<Void>
+  func setAmbientVolume(volume: Double) throws -> Promise<Void>
   func addPlayBackListener(callback: @escaping (_ playbackMeta: PlayBackType) -> Void) throws -> Void
   func removePlayBackListener() throws -> Void
   func addPlaybackEndListener(callback: @escaping (_ playbackEndMeta: PlaybackEndType) -> Void) throws -> Void
