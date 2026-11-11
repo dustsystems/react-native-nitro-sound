@@ -3545,7 +3545,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     if transcription.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
                         settleOnce { promise.resolve(withResult: "No Speech Detected") }
                     } else {
-                        self.bridgedLog("✅ Transcription complete: \(transcription.prefix(100))...")
+                        self.bridgedLog("✅ Transcription complete: \(transcription.count) chars")
                         settleOnce { promise.resolve(withResult: transcription) }
                     }
                 } else if let result = result {
@@ -3678,7 +3678,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             guard let self = self else { return }
             if let result = result {
                 let text = result.bestTranscription.formattedString
-                self.bridgedLog("🎙️ [VC] SR result: \"\(text)\" isFinal: \(result.isFinal)")
+                self.bridgedLog("🎙️ [VC] SR result: \(text.count) chars isFinal: \(result.isFinal)")
                 self.commandResultCallback?(text, result.isFinal)
             }
             if let error = error {
