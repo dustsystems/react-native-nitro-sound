@@ -195,6 +195,29 @@ export interface Sound
    */
   setAmbientVolume(volume: number): Promise<void>;
 
+  // Nap mode (experiment). Additive: nothing below is called by the night flow.
+  /**
+   * Start a second ambient loop (layer B, its own player node) that can sound
+   * together with `startAmbientLoop`'s. No fade: it starts at `volume` (0-1).
+   * Rejects when no engine is running; the node is created on first use.
+   */
+  startAmbientLoopB(uri: string, volume: number): Promise<void>;
+  /** Stop layer B at once. A no-op when it is not playing. */
+  stopAmbientLoopB(): Promise<void>;
+  /**
+   * Glide an ambient layer (0 = `startAmbientLoop`'s, 1 = layer B) linearly
+   * from its current volume to `volume` (0-1) over `durationMs` (integer
+   * milliseconds; 0 sets it at once). Works upward from a non-zero level.
+   * A newer ramp on the same layer replaces an older one.
+   *
+   * Resolves once the ramp has started, with:
+   *  - 'ramping': the loop was playing.
+   *  - 'revived': the loop had stopped (engine restart) and was queued again.
+   *  - 'no_loop': that layer has no loop; nothing was done.
+   *  - 'engine_dead': no running engine, and it would not restart.
+   */
+  rampAmbientVolume(layer: number, volume: number, durationMs: number): Promise<string>;
+
   // Listeners
   addPlayBackListener(callback: (playbackMeta: PlayBackType) => void): void;
   removePlayBackListener(): void;

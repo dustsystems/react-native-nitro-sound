@@ -129,6 +129,18 @@ abstract class HybridSoundSpec: HybridObject() {
   @Keep
   abstract fun setAmbientVolume(volume: Double): Promise<Unit>
   
+  @DoNotStrip
+  @Keep
+  abstract fun startAmbientLoopB(uri: String, volume: Double): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun stopAmbientLoopB(): Promise<Unit>
+  
+  @DoNotStrip
+  @Keep
+  abstract fun rampAmbientVolume(layer: Double, volume: Double, durationMs: Double): Promise<String>
+  
   abstract fun addPlayBackListener(callback: (playbackMeta: PlayBackType) -> Unit): Unit
   
   @DoNotStrip

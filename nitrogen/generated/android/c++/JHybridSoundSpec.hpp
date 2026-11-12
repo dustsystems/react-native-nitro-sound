@@ -79,6 +79,9 @@ namespace margelo::nitro::sound {
     std::shared_ptr<Promise<void>> startAmbientLoop(const std::string& uri, double volume, std::optional<double> fadeDuration) override;
     std::shared_ptr<Promise<void>> stopAmbientLoop(std::optional<double> fadeDuration) override;
     std::shared_ptr<Promise<void>> setAmbientVolume(double volume) override;
+    std::shared_ptr<Promise<void>> startAmbientLoopB(const std::string& uri, double volume) override;
+    std::shared_ptr<Promise<void>> stopAmbientLoopB() override;
+    std::shared_ptr<Promise<std::string>> rampAmbientVolume(double layer, double volume, double durationMs) override;
     void addPlayBackListener(const std::function<void(const PlayBackType& /* playbackMeta */)>& callback) override;
     void removePlayBackListener() override;
     void addPlaybackEndListener(const std::function<void(const PlaybackEndType& /* playbackEndMeta */)>& callback) override;

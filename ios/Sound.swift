@@ -74,6 +74,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var currentAmbientFile: AVAudioFile?
     // Node D's target volume and ramps (DUS-2094) — see AmbientVolume.swift
     private let ambientVolume = AmbientVolumeController()
+    // Nap mode (experiment), additive: a second ambient loop on its own node
+    // (layer B). The node is created by the first startAmbientLoopB, so it is
+    // nil on every night. See the "Nap mode" extension at the end of this file.
+    private var audioPlayerNodeE: AVAudioPlayerNode?
+    private var isAmbientLoopBPlaying: Bool = false
+    private var currentAmbientFileB: AVAudioFile?
+    private let ambientVolumeB = AmbientVolumeController()
+    /// Bumps on every layer B start and stop; a refill from an older queue is dropped.
+    private var ambientLoopBGeneration: UInt64 = 0
+    /// Serializes the three nap functions against each other.
+    private let napAmbientLock = NSRecursiveLock()
     private var currentLoopingFileURI: String?
 
     // Track which player is active (for future crossfading)
@@ -4699,5 +4710,233 @@ extension HybridSound {
 
     func requestDidComplete(_ request: SNRequest) {
         // No longer used
+    }
+}
+
+// MARK: - Nap mode (experiment): second ambient loop and a timed ambient ramp
+//
+// Additive. Nothing here is called by the night flow, and no existing function
+// calls into it. Layer B's node is not in the route-change recovery list or
+// the full teardown (those are unchanged): rampAmbientVolume re-queues a layer
+// that stopped, and a node left behind by a destroyed engine is dropped the
+// next time layer B starts.
+extension HybridSound {
+    private func napOpenLocalAudioFile(_ uri: String) throws -> AVAudioFile {
+        let url: URL
+        if uri.hasPrefix("file://") {
+            guard let parsed = URL(string: uri) else {
+                throw RuntimeError.error(withMessage: "Bad file URL")
+            }
+            url = parsed
+        } else if uri.hasPrefix("http") {
+            throw RuntimeError.error(withMessage: "Ambient loop B plays local files only")
+        } else {
+            url = URL(fileURLWithPath: uri)
+        }
+        return try AVAudioFile(forReading: url)
+    }
+
+    private func refillAmbientLoopB(file: AVAudioFile, node: AVAudioPlayerNode, generation: UInt64) {
+        napAmbientLock.lock()
+        let current = isAmbientLoopBPlaying
+            && generation == ambientLoopBGeneration
+            && node === audioPlayerNodeE
+        napAmbientLock.unlock()
+        guard current, node.engine != nil else { return }
+        do {
+            try ObjCExceptionCatcher.queueLoopFile(file, on: node) { [weak self] in
+                self?.refillAmbientLoopB(file: file, node: node, generation: generation)
+            }
+        } catch {
+            bridgedLog("⚠️ AMBIENT B refill failed: \(error.localizedDescription)")
+        }
+    }
+
+    public func startAmbientLoopB(uri: String, volume: Double) throws -> Promise<Void> {
+        let promise = Promise<Void>()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
+                return
+            }
+            self.napAmbientLock.lock()
+            defer { self.napAmbientLock.unlock() }
+
+            self.ambientVolumeB.log = { [weak self] message in
+                self?.bridgedLog("[B] " + message)
+            }
+
+            do {
+                let file = try self.napOpenLocalAudioFile(uri)
+
+                // Find or create the node on engineControlQueue, so this never
+                // interleaves with a route-change recovery or a teardown. This
+                // closure runs on DispatchQueue.global, so .sync is safe.
+                var node: AVAudioPlayerNode?
+                var failure: String?
+                self.engineControlQueue.sync {
+                    guard !self.teardownInFlight, self.audioEngineInitialized,
+                          let engine = self.audioEngine, engine.isRunning else {
+                        failure = "Ambient loop B needs a running engine"
+                        return
+                    }
+                    // A node left by an engine that has since been destroyed.
+                    if let stale = self.audioPlayerNodeE, stale.engine !== engine {
+                        self.audioPlayerNodeE = nil
+                    }
+                    if let existing = self.audioPlayerNodeE {
+                        node = existing
+                        return
+                    }
+                    let created = AVAudioPlayerNode()
+                    do {
+                        try ObjCExceptionCatcher.attachPlayer(created, to: engine, format: nil)
+                        self.audioPlayerNodeE = created
+                        node = created
+                        self.bridgedLog("🎵 AMBIENT B: node E attached to the running engine")
+                    } catch {
+                        failure = "Could not attach ambient node E: \(error.localizedDescription)"
+                    }
+                }
+                guard let playerE = node else {
+                    throw RuntimeError.error(withMessage: failure ?? "Ambient node E unavailable")
+                }
+
+                self.ambientLoopBGeneration &+= 1
+                let generation = self.ambientLoopBGeneration
+                self.currentAmbientFileB = file
+                self.isAmbientLoopBPlaying = true
+                let target = self.ambientVolumeB.beginLoop(volume: Float(volume))
+                playerE.volume = target
+
+                try ObjCExceptionCatcher.restartLoop(on: playerE, file: file) { [weak self] in
+                    self?.refillAmbientLoopB(file: file, node: playerE, generation: generation)
+                }
+                guard playerE.isPlaying else {
+                    self.ambientLoopBGeneration &+= 1
+                    self.isAmbientLoopBPlaying = false
+                    self.currentAmbientFileB = nil
+                    self.ambientVolumeB.reset()
+                    throw RuntimeError.error(withMessage: "Ambient loop B did not start (engine stopped)")
+                }
+                self.ambientVolumeB.settle(node: playerE)
+                self.bridgedLog("🎵 AMBIENT B on Node E: \(file.url.lastPathComponent) at \(Int(target * 100))% volume")
+                promise.resolve(withResult: ())
+            } catch {
+                self.bridgedLog("❌ Failed to start ambient loop B: \(error.localizedDescription)")
+                promise.reject(withError: RuntimeError.error(withMessage: error.localizedDescription))
+            }
+        }
+
+        return promise
+    }
+
+    public func stopAmbientLoopB() throws -> Promise<Void> {
+        let promise = Promise<Void>()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
+                return
+            }
+            self.napAmbientLock.lock()
+            defer { self.napAmbientLock.unlock() }
+
+            let wasPlaying = self.isAmbientLoopBPlaying
+            self.ambientLoopBGeneration &+= 1
+            self.isAmbientLoopBPlaying = false
+            self.currentAmbientFileB = nil
+            self.ambientVolumeB.reset()
+            if let playerE = self.audioPlayerNodeE {
+                do {
+                    try ObjCExceptionCatcher.stopPlayer(playerE)
+                } catch {
+                    self.bridgedLog("⚠️ AMBIENT B stop failed: \(error.localizedDescription)")
+                }
+            }
+            if wasPlaying {
+                self.bridgedLog("🔇 STOPPED Ambient B (Node E)")
+            }
+            promise.resolve(withResult: ())
+        }
+
+        return promise
+    }
+
+    public func rampAmbientVolume(layer: Double, volume: Double, durationMs: Double) throws -> Promise<String> {
+        let promise = Promise<String>()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
+                return
+            }
+            self.napAmbientLock.lock()
+            defer { self.napAmbientLock.unlock() }
+
+            guard self.audioEngineInitialized, let engine = self.audioEngine else {
+                promise.resolve(withResult: "engine_dead")
+                return
+            }
+            // A stopped engine (a route change, say) gets the same retry
+            // startPlayer makes. Errors are logged, never thrown. This closure
+            // runs on DispatchQueue.global, never engineControlQueue.
+            if !engine.isRunning {
+                self.bridgedLog("⚠️ ENGINE NOT RUNNING at rampAmbientVolume — attempting recovery")
+                do {
+                    try self.ensureEngineRunning()
+                } catch {
+                    self.bridgedLog("⚠️ ensureEngineRunning() retry failed: \(error.localizedDescription)")
+                }
+            }
+            guard self.audioEngine === engine, engine.isRunning else {
+                promise.resolve(withResult: "engine_dead")
+                return
+            }
+
+            let isLayerB = Int(layer.rounded()) == 1
+            let playing = isLayerB ? self.isAmbientLoopBPlaying : self.isAmbientLoopPlaying
+            let controller = isLayerB ? self.ambientVolumeB : self.ambientVolume
+            guard playing,
+                  let node = isLayerB ? self.audioPlayerNodeE : self.audioPlayerNodeD,
+                  let file = isLayerB ? self.currentAmbientFileB : self.currentAmbientFile,
+                  node.engine === engine else {
+                promise.resolve(withResult: "no_loop")
+                return
+            }
+
+            var status = "ramping"
+            if !node.isPlaying {
+                // The engine was restarted under the loop: queue it again.
+                do {
+                    if isLayerB {
+                        self.ambientLoopBGeneration &+= 1
+                        let generation = self.ambientLoopBGeneration
+                        try ObjCExceptionCatcher.restartLoop(on: node, file: file) { [weak self] in
+                            self?.refillAmbientLoopB(file: file, node: node, generation: generation)
+                        }
+                    } else {
+                        try ObjCExceptionCatcher.restartLoop(on: node, file: file) { [weak self] in
+                            self?.scheduleMoreAmbientLoops(audioFile: file, playerNode: node)
+                        }
+                    }
+                } catch {
+                    self.bridgedLog("⚠️ AMBIENT layer \(isLayerB ? 1 : 0) revive failed: \(error.localizedDescription)")
+                }
+                guard node.isPlaying else {
+                    promise.resolve(withResult: "engine_dead")
+                    return
+                }
+                status = "revived"
+                self.bridgedLog("🎵 AMBIENT layer \(isLayerB ? 1 : 0) revived by rampAmbientVolume")
+            }
+
+            let seconds = durationMs.isFinite ? max(0, durationMs) / 1000 : 0
+            controller.rampTo(Float(volume), node: node, duration: seconds)
+            promise.resolve(withResult: status)
+        }
+
+        return promise
     }
 }

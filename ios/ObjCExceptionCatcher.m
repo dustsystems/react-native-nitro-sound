@@ -66,4 +66,90 @@ NSString *const ObjCExceptionCatcherErrorDomain = @"ObjCException";
     }
 }
 
+#pragma mark - Nap mode (experiment), additive
+
+static NSError *NapErrorFromException(NSException *exception) {
+    NSDictionary *userInfo = @{
+        NSLocalizedDescriptionKey : exception.reason ?: @"unknown ObjC exception",
+        @"ExceptionName" : exception.name ?: @"unknown",
+    };
+    return [NSError errorWithDomain:ObjCExceptionCatcherErrorDomain code:-1 userInfo:userInfo];
+}
+
++ (BOOL)attachPlayer:(AVAudioPlayerNode *)player
+            toEngine:(AVAudioEngine *)engine
+              format:(AVAudioFormat * _Nullable)format
+               error:(NSError **)error {
+    BOOL attached = NO;
+    @try {
+        [engine attachNode:player];
+        attached = YES;
+        [engine connect:player to:engine.mainMixerNode format:format];
+        return YES;
+    } @catch (NSException *exception) {
+        if (attached) {
+            @try {
+                [engine detachNode:player];
+            } @catch (NSException *ignored) {
+            }
+        }
+        if (error) {
+            *error = NapErrorFromException(exception);
+        }
+        return NO;
+    }
+}
+
++ (BOOL)queueLoopFile:(AVAudioFile *)file
+             onPlayer:(AVAudioPlayerNode *)player
+               refill:(AVAudioNodeCompletionHandler)refill
+                error:(NSError **)error {
+    @try {
+        [player scheduleFile:file atTime:nil completionHandler:nil];
+        [player scheduleFile:file atTime:nil completionHandler:nil];
+        [player scheduleFile:file atTime:nil completionHandler:refill];
+        return YES;
+    } @catch (NSException *exception) {
+        if (error) {
+            *error = NapErrorFromException(exception);
+        }
+        return NO;
+    }
+}
+
++ (BOOL)restartLoopOnPlayer:(AVAudioPlayerNode *)player
+                       file:(AVAudioFile *)file
+                     refill:(AVAudioNodeCompletionHandler)refill
+                      error:(NSError **)error {
+    @try {
+        [player stop];
+        [player scheduleFile:file atTime:nil completionHandler:nil];
+        [player scheduleFile:file atTime:nil completionHandler:nil];
+        [player scheduleFile:file atTime:nil completionHandler:refill];
+        if (player.engine != nil && player.engine.isRunning) {
+            [player play];
+        }
+        return YES;
+    } @catch (NSException *exception) {
+        if (error) {
+            *error = NapErrorFromException(exception);
+        }
+        return NO;
+    }
+}
+
++ (BOOL)stopPlayer:(AVAudioPlayerNode *)player error:(NSError **)error {
+    @try {
+        if (player.engine != nil) {
+            [player stop];
+        }
+        return YES;
+    } @catch (NSException *exception) {
+        if (error) {
+            *error = NapErrorFromException(exception);
+        }
+        return NO;
+    }
+}
+
 @end

@@ -38,6 +38,9 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func startAmbientLoop(uri: String, volume: Double, fadeDuration: Double?) throws -> Promise<Void>
   func stopAmbientLoop(fadeDuration: Double?) throws -> Promise<Void>
   func setAmbientVolume(volume: Double) throws -> Promise<Void>
+  func startAmbientLoopB(uri: String, volume: Double) throws -> Promise<Void>
+  func stopAmbientLoopB() throws -> Promise<Void>
+  func rampAmbientVolume(layer: Double, volume: Double, durationMs: Double) throws -> Promise<String>
   func addPlayBackListener(callback: @escaping (_ playbackMeta: PlayBackType) -> Void) throws -> Void
   func removePlayBackListener() throws -> Void
   func addPlaybackEndListener(callback: @escaping (_ playbackEndMeta: PlaybackEndType) -> Void) throws -> Void

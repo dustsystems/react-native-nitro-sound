@@ -43,6 +43,36 @@ NS_ASSUME_NONNULL_BEGIN
                    error:(NSError **)error
     NS_SWIFT_NAME(installTap(on:bus:bufferSize:format:block:removeFirst:));
 
+/// Nap mode (experiment), additive. Attaches `player` to `engine` and connects it to the
+/// main mixer (`format` nil = the node's own output format, as the other players use),
+/// inside `@try/@catch`. The engine may be running. On `NO` the node is detached again
+/// when it had been attached.
++ (BOOL)attachPlayer:(AVAudioPlayerNode *)player
+            toEngine:(AVAudioEngine *)engine
+              format:(nullable AVAudioFormat *)format
+               error:(NSError **)error NS_SWIFT_NAME(attachPlayer(_:to:format:));
+
+/// Nap mode (experiment), additive. Queues `file` three times on `player`, the last with
+/// `refill` as its completion handler (the looping pattern the ambient layer uses), inside
+/// `@try/@catch`. Does not stop or start the node.
++ (BOOL)queueLoopFile:(AVAudioFile *)file
+             onPlayer:(AVAudioPlayerNode *)player
+               refill:(AVAudioNodeCompletionHandler)refill
+                error:(NSError **)error NS_SWIFT_NAME(queueLoopFile(_:on:refill:));
+
+/// Nap mode (experiment), additive. Stops `player`, queues `file` as `queueLoopFile` does
+/// and plays it, inside `@try/@catch`. `play` is only called while the node's engine is
+/// running; check `player.isPlaying` afterwards.
++ (BOOL)restartLoopOnPlayer:(AVAudioPlayerNode *)player
+                       file:(AVAudioFile *)file
+                     refill:(AVAudioNodeCompletionHandler)refill
+                      error:(NSError **)error NS_SWIFT_NAME(restartLoop(on:file:refill:));
+
+/// Nap mode (experiment), additive. Stops `player` if it is still attached to an engine,
+/// inside `@try/@catch`.
++ (BOOL)stopPlayer:(AVAudioPlayerNode *)player
+             error:(NSError **)error NS_SWIFT_NAME(stopPlayer(_:));
+
 @end
 
 NS_ASSUME_NONNULL_END
