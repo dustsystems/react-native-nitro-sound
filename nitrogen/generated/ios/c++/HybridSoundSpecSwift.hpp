@@ -279,6 +279,30 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::shared_ptr<Promise<void>> startAmbientLoopB(const std::string& uri, double volume) override {
+      auto __result = _swiftPart.startAmbientLoopB(uri, std::forward<decltype(volume)>(volume));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<void>> stopAmbientLoopB() override {
+      auto __result = _swiftPart.stopAmbientLoopB();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
+    inline std::shared_ptr<Promise<std::string>> rampAmbientVolume(double layer, double volume, double durationMs) override {
+      auto __result = _swiftPart.rampAmbientVolume(std::forward<decltype(layer)>(layer), std::forward<decltype(volume)>(volume), std::forward<decltype(durationMs)>(durationMs));
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
     inline void addPlayBackListener(const std::function<void(const PlayBackType& /* playbackMeta */)>& callback) override {
       auto __result = _swiftPart.addPlayBackListener(callback);
       if (__result.hasError()) [[unlikely]] {

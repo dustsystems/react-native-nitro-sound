@@ -231,6 +231,82 @@ final class AmbientVolumeController {
         timer.resume()
     }
 
+    /// Nap mode (experiment), additive: glide linearly from the node's current
+    /// volume to `volume` over `duration` seconds, then go steady. Unlike
+    /// `rampUp` it takes its own target, so it works upward from a non-zero
+    /// level and downward alike. Ignored while the loop is stopping; while
+    /// paused or with no loop it only stores the target. A newer `rampTo`
+    /// (or any other ramp) supersedes this one. `duration` 0 sets the level.
+    func rampTo(_ volume: Float, node: AVAudioPlayerNode, duration: Double) {
+        let clamped = Self.clamp(volume)
+        lock.lock()
+        if phase == .stopping {
+            lock.unlock()
+            log("🔊 AMBIENT rampTo ignored — loop is stopping")
+            return
+        }
+        target = clamped
+        if phase == .idle || phase == .holding {
+            lock.unlock()
+            return
+        }
+        supersedeLocked()
+        phase = .rampingUp
+        let gen = generation
+        // One step about every 20 ms: fine enough not to be heard as steps,
+        // and a 250 ms glide costs a dozen main-queue wake-ups, not sixty.
+        let seconds = max(duration, 0)
+        let steps = max(1, min(2_000, Int((seconds / 0.02).rounded())))
+        let timer = DispatchSource.makeTimerSource(queue: .main)
+        rampTimer = timer
+        lock.unlock()
+
+        var step = 0
+        var startVolume: Float?
+
+        timer.schedule(
+            deadline: .now(),
+            repeating: .microseconds(max(1_000, Int(seconds / Double(steps) * 1_000_000)))
+        )
+        timer.setEventHandler { [weak self] in
+            guard let self = self else {
+                timer.cancel()
+                return
+            }
+            self.lock.lock()
+            guard self.generation == gen else {
+                self.lock.unlock()
+                timer.cancel()
+                return
+            }
+            guard node.engine != nil else {
+                self.phase = .idle
+                self.rampTimer = nil
+                self.lock.unlock()
+                timer.cancel()
+                return
+            }
+            let goal = self.target
+            let done = seconds <= 0 || step >= steps
+            if done {
+                self.phase = .steady
+                self.rampTimer = nil
+            }
+            self.lock.unlock()
+
+            let from = startVolume ?? node.volume
+            startVolume = from
+            if done {
+                node.volume = goal
+                timer.cancel()
+            } else {
+                node.volume = from + (goal - from) * (Float(step) / Float(steps))
+            }
+            step += 1
+        }
+        timer.resume()
+    }
+
     /// The loop is gone (stopped, or the engine torn down). Cancels any ramp
     /// and keeps the target.
     func reset() {

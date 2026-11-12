@@ -39,6 +39,9 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("startAmbientLoop", &HybridSoundSpec::startAmbientLoop);
       prototype.registerHybridMethod("stopAmbientLoop", &HybridSoundSpec::stopAmbientLoop);
       prototype.registerHybridMethod("setAmbientVolume", &HybridSoundSpec::setAmbientVolume);
+      prototype.registerHybridMethod("startAmbientLoopB", &HybridSoundSpec::startAmbientLoopB);
+      prototype.registerHybridMethod("stopAmbientLoopB", &HybridSoundSpec::stopAmbientLoopB);
+      prototype.registerHybridMethod("rampAmbientVolume", &HybridSoundSpec::rampAmbientVolume);
       prototype.registerHybridMethod("addPlayBackListener", &HybridSoundSpec::addPlayBackListener);
       prototype.registerHybridMethod("removePlayBackListener", &HybridSoundSpec::removePlayBackListener);
       prototype.registerHybridMethod("addPlaybackEndListener", &HybridSoundSpec::addPlaybackEndListener);
