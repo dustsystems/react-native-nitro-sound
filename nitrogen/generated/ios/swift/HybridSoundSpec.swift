@@ -73,6 +73,7 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func ensureLiveTranscriptionAssets(locale: String) throws -> Promise<String>
   func startLiveTranscription(locale: String) throws -> Promise<Void>
   func stopLiveTranscription() throws -> Promise<Void>
+  func transcribeFileWithAnalyzer(filePath: String, locale: String) throws -> Promise<String>
   func setLiveTranscriptionResultCallback(callback: @escaping (_ text: String, _ isFinal: Bool) -> Void) throws -> Void
   func removeLiveTranscriptionResultCallback() throws -> Void
   func setLiveTranscriptionErrorCallback(callback: @escaping (_ code: String, _ message: String) -> Void) throws -> Void

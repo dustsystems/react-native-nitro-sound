@@ -121,6 +121,7 @@ namespace margelo::nitro::sound {
       virtual std::shared_ptr<Promise<std::string>> ensureLiveTranscriptionAssets(const std::string& locale) = 0;
       virtual std::shared_ptr<Promise<void>> startLiveTranscription(const std::string& locale) = 0;
       virtual std::shared_ptr<Promise<void>> stopLiveTranscription() = 0;
+      virtual std::shared_ptr<Promise<std::string>> transcribeFileWithAnalyzer(const std::string& filePath, const std::string& locale) = 0;
       virtual void setLiveTranscriptionResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) = 0;
       virtual void removeLiveTranscriptionResultCallback() = 0;
       virtual void setLiveTranscriptionErrorCallback(const std::function<void(const std::string& /* code */, const std::string& /* message */)>& callback) = 0;

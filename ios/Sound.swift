@@ -3772,6 +3772,23 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return promise
     }
 
+    public func transcribeFileWithAnalyzer(filePath: String, locale: String) throws -> Promise<String> {
+        let promise = Promise<String>()
+        if #available(iOS 26.0, *) {
+            Task {
+                do {
+                    let text = try await FileTranscriber.transcribe(filePath: filePath, localeIdentifier: locale)
+                    promise.resolve(withResult: text)
+                } catch {
+                    promise.reject(withError: RuntimeError.error(withMessage: error.localizedDescription))
+                }
+            }
+        } else {
+            promise.reject(withError: RuntimeError.error(withMessage: "SpeechAnalyzer file transcription requires iOS 26"))
+        }
+        return promise
+    }
+
     public func setLiveTranscriptionResultCallback(callback: @escaping (String, Bool) -> Void) throws {
         liveTranscriptionResultCallback = callback
     }

@@ -728,6 +728,22 @@ namespace margelo::nitro::sound {
       return __promise;
     }();
   }
+  std::shared_ptr<Promise<std::string>> JHybridSoundSpec::transcribeFileWithAnalyzer(const std::string& filePath, const std::string& locale) {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JString> /* filePath */, jni::alias_ref<jni::JString> /* locale */)>("transcribeFileWithAnalyzer");
+    auto __result = method(_javaPart, jni::make_jstring(filePath), jni::make_jstring(locale));
+    return [&]() {
+      auto __promise = Promise<std::string>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& __boxedResult) {
+        auto __result = jni::static_ref_cast<jni::JString>(__boxedResult);
+        __promise->resolve(__result->toStdString());
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
   void JHybridSoundSpec::setLiveTranscriptionResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<void(jni::alias_ref<JFunc_void_std__string_bool::javaobject> /* callback */)>("setLiveTranscriptionResultCallback_cxx");
     method(_javaPart, JFunc_void_std__string_bool_cxx::fromCpp(callback));
