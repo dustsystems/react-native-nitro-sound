@@ -74,6 +74,7 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("ensureLiveTranscriptionAssets", &HybridSoundSpec::ensureLiveTranscriptionAssets);
       prototype.registerHybridMethod("startLiveTranscription", &HybridSoundSpec::startLiveTranscription);
       prototype.registerHybridMethod("stopLiveTranscription", &HybridSoundSpec::stopLiveTranscription);
+      prototype.registerHybridMethod("transcribeFileWithAnalyzer", &HybridSoundSpec::transcribeFileWithAnalyzer);
       prototype.registerHybridMethod("setLiveTranscriptionResultCallback", &HybridSoundSpec::setLiveTranscriptionResultCallback);
       prototype.registerHybridMethod("removeLiveTranscriptionResultCallback", &HybridSoundSpec::removeLiveTranscriptionResultCallback);
       prototype.registerHybridMethod("setLiveTranscriptionErrorCallback", &HybridSoundSpec::setLiveTranscriptionErrorCallback);

@@ -517,6 +517,14 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::shared_ptr<Promise<std::string>> transcribeFileWithAnalyzer(const std::string& filePath, const std::string& locale) override {
+      auto __result = _swiftPart.transcribeFileWithAnalyzer(filePath, locale);
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
     inline void setLiveTranscriptionResultCallback(const std::function<void(const std::string& /* text */, bool /* isFinal */)>& callback) override {
       auto __result = _swiftPart.setLiveTranscriptionResultCallback(callback);
       if (__result.hasError()) [[unlikely]] {

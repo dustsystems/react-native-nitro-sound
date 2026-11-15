@@ -348,6 +348,16 @@ export interface Sound
    */
   stopLiveTranscription(): Promise<void>;
 
+  /**
+   * Transcribe a recorded audio file on SpeechAnalyzer (iOS 26+), the engine
+   * live dictation uses, so a night recording is punctuated like a journal
+   * one (DUS-3011). File input only: no microphone, and the shared audio
+   * session is never touched. On-device; check ensureLiveTranscriptionAssets()
+   * first. Resolves the finalized text ('' when the file has no words).
+   * Rejects below iOS 26, when the model is missing, or on an analyzer error.
+   */
+  transcribeFileWithAnalyzer(filePath: string, locale: string): Promise<string>;
+
   /** Result callback: (segment text, isFinal). Set before startLiveTranscription. */
   setLiveTranscriptionResultCallback(callback: (text: string, isFinal: boolean) => void): void;
   removeLiveTranscriptionResultCallback(): void;

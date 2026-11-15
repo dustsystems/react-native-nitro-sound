@@ -320,6 +320,10 @@ abstract class HybridSoundSpec: HybridObject() {
   @Keep
   abstract fun stopLiveTranscription(): Promise<Unit>
   
+  @DoNotStrip
+  @Keep
+  abstract fun transcribeFileWithAnalyzer(filePath: String, locale: String): Promise<String>
+  
   abstract fun setLiveTranscriptionResultCallback(callback: (text: String, isFinal: Boolean) -> Unit): Unit
   
   @DoNotStrip
