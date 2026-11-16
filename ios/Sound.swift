@@ -5,6 +5,7 @@ import SoundAnalysis
 import FluidAudio
 import Speech
 import MediaPlayer
+import UIKit
 
 final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResultsObserving {
     private var audioEngine: AVAudioEngine?
@@ -264,6 +265,19 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var currentInterruptionId: String?
     private var interruptionStartTime: Date?
 
+    // Restart-refusal diagnostics (DUS-2819 follow-up). Observation only: what the app and
+    // the audio session looked like when iOS refused to start the engine again. All four are
+    // read and written under restartDiagnosticsLock (main thread, the interruption
+    // notification's thread and engineControlQueue all touch them).
+    private let restartDiagnosticsLock = NSLock()
+    private var appStateForDiagnostics = "unknown"
+    private var lastInterruptionEndedAt: Date?
+    private var restartRefusalsSinceInterruption = 0
+    private var appStateObservers: [NSObjectProtocol] = []
+    /// Refusals after this many since the last interruption are logged but not sent to the
+    /// night trail: the recovery retries up to 30 times and each one fails twice.
+    private static let restartRefusalTrailLimit = 6
+
     // Segment callback to notify JavaScript when a new file is written
     private var segmentCallback: ((String, String, Bool, Double) -> Void)?
 
@@ -286,6 +300,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self?.bridgedLog(message)
         }
         setupAudioInterruptionHandling()
+        setupAppStateTrackingForDiagnostics()
     }
 
     private func setupAudioEngine() throws {
@@ -548,6 +563,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let mixHz = Int(engine.mainMixerNode.outputFormat(forBus: 0).sampleRate)
             let inHz = inputSampleRateForLog(engine)
             bridgedLog("   ↳ ✅ recovery succeeded — mixer=\(mixHz)Hz input=\(inHz)Hz")
+            noteRestartSucceeded()
             emitEngineEvent("engineRecovered", "mixer=\(mixHz)Hz input=\(inHz)Hz")
         } catch {
             engineRecoveryFailed = true
@@ -555,6 +571,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let reason = "\(ns.domain) code=\(ns.code): \(ns.localizedDescription)"
             bridgedLog("   ↳ ❌ recovery FAILED — \(reason)")
             emitEngineEvent("engineRecoveryFailed", reason)
+            noteRestartRefused(site: "recover", error: ns)
         }
     }
 
@@ -578,14 +595,120 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             do {
                 try engine.start()
                 bridgedLog("✅ Audio engine restarted")
+                noteRestartSucceeded()
             } catch {
                 let nsError = error as NSError
                 bridgedLog("❌ Engine restart failed: \(error.localizedDescription) (code: \(nsError.code))")
+                noteRestartRefused(site: "restart", error: nsError)
                 throw error
             }
         } else {
             bridgedLog("✅ Audio engine already running")
         }
+    }
+
+    // MARK: - Restart-refusal diagnostics (DUS-2819 follow-up)
+
+    /// Caches the app's state for the diagnostics below: UIApplication.applicationState may
+    /// only be read on the main thread, and a refusal is logged from whichever thread tried
+    /// the restart. Idempotent.
+    private func setupAppStateTrackingForDiagnostics() {
+        restartDiagnosticsLock.lock()
+        let alreadyObserving = !appStateObservers.isEmpty
+        restartDiagnosticsLock.unlock()
+        guard !alreadyObserving else { return }
+
+        let center = NotificationCenter.default
+        let states: [(Notification.Name, String)] = [
+            (UIApplication.didBecomeActiveNotification, "active"),
+            (UIApplication.willResignActiveNotification, "inactive"),
+            (UIApplication.didEnterBackgroundNotification, "background"),
+            (UIApplication.willEnterForegroundNotification, "inactive"),
+        ]
+        var observers: [NSObjectProtocol] = []
+        for (name, state) in states {
+            observers.append(center.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                self?.setAppStateForDiagnostics(state)
+            })
+        }
+        restartDiagnosticsLock.lock()
+        appStateObservers = observers
+        restartDiagnosticsLock.unlock()
+
+        DispatchQueue.main.async { [weak self] in
+            let state: String
+            switch UIApplication.shared.applicationState {
+            case .active: state = "active"
+            case .inactive: state = "inactive"
+            case .background: state = "background"
+            @unknown default: state = "unknown"
+            }
+            self?.setAppStateForDiagnostics(state)
+        }
+    }
+
+    private func setAppStateForDiagnostics(_ state: String) {
+        restartDiagnosticsLock.lock()
+        appStateForDiagnostics = state
+        restartDiagnosticsLock.unlock()
+    }
+
+    /// What the app and the audio session look like right now, as `key=value;` pairs. Read-only:
+    /// nothing here activates, configures or touches the session or the engine.
+    /// - `app`: active / inactive / background, as last reported to the app.
+    /// - `other_audio`: AVAudioSession.isOtherAudioPlaying (any other audio, ambient included).
+    /// - `silence_hint`: secondaryAudioShouldBeSilencedHint (another app's nonmixable session plays).
+    /// - `options`: the category options' raw value (mixWithOthers 1, allowBluetoothA2DP 32,
+    ///   defaultToSpeaker 8).
+    /// - `since_end_ms`: since the last interruption ended, -1 when none has. `interrupted`:
+    ///   an interruption is open right now.
+    private func sessionContextForDiagnostics() -> String {
+        let session = AVAudioSession.sharedInstance()
+        restartDiagnosticsLock.lock()
+        let app = appStateForDiagnostics
+        let endedAt = lastInterruptionEndedAt
+        restartDiagnosticsLock.unlock()
+        let sinceEndMs = endedAt.map { Int((Date().timeIntervalSince($0) * 1000).rounded()) } ?? -1
+        let category = session.category.rawValue.replacingOccurrences(of: "AVAudioSessionCategory", with: "")
+        let mode = session.mode.rawValue.replacingOccurrences(of: "AVAudioSessionMode", with: "")
+        let routeIn = session.currentRoute.inputs.map { $0.portType.rawValue }.joined(separator: ",")
+        let routeOut = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+        return [
+            "app=\(app)",
+            "other_audio=\(session.isOtherAudioPlaying)",
+            "silence_hint=\(session.secondaryAudioShouldBeSilencedHint)",
+            "category=\(category)",
+            "options=\(session.categoryOptions.rawValue)",
+            "mode=\(mode)",
+            "input_available=\(session.isInputAvailable)",
+            "inputs=\(session.availableInputs?.count ?? 0)",
+            "route_in=\(routeIn.isEmpty ? "none" : routeIn)",
+            "route_out=\(routeOut.isEmpty ? "none" : routeOut)",
+            "interrupted=\(interruptionStartTime != nil)",
+            "since_end_ms=\(sinceEndMs)",
+        ].joined(separator: ";")
+    }
+
+    /// iOS refused to start the engine: log what the session looked like, and send the first
+    /// few refusals after an interruption to the night trail (`engine_event engineRestartRefused`).
+    /// `site` is `recover` (the guarded reconnect) or `restart` (the bare engine.start()).
+    private func noteRestartRefused(site: String, error: NSError) {
+        restartDiagnosticsLock.lock()
+        restartRefusalsSinceInterruption += 1
+        let attempt = restartRefusalsSinceInterruption
+        restartDiagnosticsLock.unlock()
+        let detail = "site=\(site);attempt=\(attempt);code=\(error.code);\(sessionContextForDiagnostics())"
+        bridgedLog("   ↳ 🔎 restart refused: \(detail)")
+        if attempt <= HybridSound.restartRefusalTrailLimit {
+            emitEngineEvent("engineRestartRefused", detail)
+        }
+    }
+
+    /// The engine runs again: the next refusal starts a new count.
+    private func noteRestartSucceeded() {
+        restartDiagnosticsLock.lock()
+        restartRefusalsSinceInterruption = 0
+        restartDiagnosticsLock.unlock()
     }
 
     // MARK: - Audio Interruption Handling
@@ -778,6 +901,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Generate new interruption ID and record start time
             currentInterruptionId = String(UUID().uuidString.prefix(8)).lowercased()
             interruptionStartTime = Date()
+            restartDiagnosticsLock.lock()
+            restartRefusalsSinceInterruption = 0
+            restartDiagnosticsLock.unlock()
 
             bridgedLog("╔════════════════════════════════════════════════════════════════╗")
             bridgedLog("║  🔇 AUDIO INTERRUPTION BEGAN                                   ║")
@@ -813,6 +939,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             bridgedLog("║  Should Resume: \(shouldResume)")
             bridgedLog("╚════════════════════════════════════════════════════════════════╝")
             logStateSnapshot(context: "interruption-ended")
+            restartDiagnosticsLock.lock()
+            lastInterruptionEndedAt = Date()
+            restartRefusalsSinceInterruption = 0
+            restartDiagnosticsLock.unlock()
+            // Logged on every end, so a restart that works can be read beside one that is refused.
+            bridgedLog("   ↳ 🔎 session at interruption end: \(sessionContextForDiagnostics())")
             // Night outcome evidence: the `audio_interruption_ended` trail step. The duration is how
             // long the other session held the speaker (an AlarmKit alert, a call, a Clock alarm).
             // iOS sends the reason only with `began`, so the ended event carries none.
@@ -4619,6 +4751,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // MARK: - AVAudioPlayerDelegate via proxy
     deinit {
+        appStateObservers.forEach { NotificationCenter.default.removeObserver($0) }
         playTimer?.invalidate()
         crossfadeTimer?.invalidate()
         loopCrossfadeTimer?.cancel()
