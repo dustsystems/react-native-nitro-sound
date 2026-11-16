@@ -143,6 +143,14 @@ namespace margelo::nitro::sound {
       auto __value = std::move(__result.value());
       return __value;
     }
+    inline std::shared_ptr<Promise<double>> getRecordingSilenceMs() override {
+      auto __result = _swiftPart.getRecordingSilenceMs();
+      if (__result.hasError()) [[unlikely]] {
+        std::rethrow_exception(__result.error());
+      }
+      auto __value = std::move(__result.value());
+      return __value;
+    }
     inline std::shared_ptr<Promise<std::string>> startPlayer(const std::optional<std::string>& uri, const std::optional<std::unordered_map<std::string, std::string>>& httpHeaders) override {
       auto __result = _swiftPart.startPlayer(uri, httpHeaders);
       if (__result.hasError()) [[unlikely]] {

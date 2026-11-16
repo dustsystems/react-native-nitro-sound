@@ -1,5 +1,6 @@
 import Foundation
 import AVFoundation
+import Accelerate
 import NitroModules
 import SoundAnalysis
 import FluidAudio
@@ -93,6 +94,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var fixedDurationTimer: DispatchSourceTimer?
     private var recordingStartTime: Date?
     private var maxRecordingDuration: Double = 90.0  // Default 90 seconds
+
+    // Silence reading for the app (DUS-2556). The worker compares each chunk's
+    // level with the room's own noise floor and stamps the last time it heard
+    // speech; JS polls getRecordingSilenceMs() and ends the recording after a
+    // long silence. Read from JS threads, written from the worker: lock-guarded.
+    private let speechLevelLock = NSLock()
+    private var lastSpeechAt: Date?
+    private var speechNoiseFloorDb: Float?
+    /// Speech is this far above the noise floor (SleepCapture's "medium" margin).
+    private let speechMarginDb: Float = 9.0
+    /// Nothing quieter than this counts as speech, whatever the floor.
+    private let speechMinimumDb: Float = -60.0
+    /// The floor follows a rising room slowly (SleepCapture's 3 dB per minute).
+    private let speechFloorRiseDbPerSecond: Float = 3.0 / 60.0
 
     // Crossfade state management
     private var crossfadeTimer: Timer?
@@ -1830,6 +1845,44 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return promise
     }
 
+    public func getRecordingSilenceMs() throws -> Promise<Double> {
+        let promise = Promise<Double>()
+        speechLevelLock.lock()
+        let since = lastSpeechAt
+        speechLevelLock.unlock()
+        if self.isRecordingSession, let since = since {
+            promise.resolve(withResult: (Date().timeIntervalSince(since) * 1000).rounded())
+        } else {
+            promise.resolve(withResult: -1)
+        }
+        return promise
+    }
+
+    /// Worker only: stamp lastSpeechAt when this chunk is louder than the
+    /// room. The floor drops at once to a quieter chunk and rises slowly, so a
+    /// person talking from the first chunk still gets a floor once they pause.
+    private func trackSpeechLevelOnWorker(_ buffer: AVAudioPCMBuffer) {
+        let frames = Int(buffer.frameLength)
+        guard frames > 0, let samples = buffer.floatChannelData?[0] else { return }
+        var rms: Float = 0
+        vDSP_rmsqv(samples, 1, &rms, vDSP_Length(frames))
+        let levelDb = 20 * log10(max(rms, 1e-6))
+        let seconds = Float(frames) / Float(buffer.format.sampleRate)
+
+        speechLevelLock.lock()
+        var floor = speechNoiseFloorDb ?? levelDb
+        if levelDb < floor {
+            floor = levelDb
+        } else {
+            floor += speechFloorRiseDbPerSecond * seconds
+        }
+        speechNoiseFloorDb = floor
+        if levelDb > max(floor + speechMarginDb, speechMinimumDb) {
+            lastSpeechAt = Date()
+        }
+        speechLevelLock.unlock()
+    }
+
     // MARK: - Worker Queue (RT-Safe Audio Processing)
 
     /// Start the recording session - activates worker to drain SPSC buffer and write to file
@@ -1856,6 +1909,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         do {
             currentSegmentFile = try AVAudioFile(forWriting: fileURL, settings: targetFormat.settings)
             segmentStartTime = Date()
+            speechLevelLock.lock()
+            lastSpeechAt = segmentStartTime
+            speechNoiseFloorDb = nil
+            speechLevelLock.unlock()
             isRecordingSession = true
             bridgedLog("🎙️ Recording session started: \(fileURL.lastPathComponent)")
         } catch {
@@ -1952,6 +2009,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // DISABLED: VAD/silence detection
             // let audioIsLoud = runVADOnWorker(samples16k)
             // handleSilenceDetectionOnWorker(audioIsLoud: audioIsLoud)
+
+            // Silence reading for the app (DUS-2556) — level only, never stops anything.
+            if isRecordingSession {
+                trackSpeechLevelOnWorker(samples16k)
+            }
 
             // 2. Write to file (recording sink)
             if isRecordingSession, let segmentFile = currentSegmentFile {

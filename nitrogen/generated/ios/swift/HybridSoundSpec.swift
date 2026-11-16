@@ -21,6 +21,7 @@ public protocol HybridSoundSpec_protocol: HybridObject {
   func beginRecording(maxDurationSeconds: Double) throws -> Promise<Void>
   func endRecording() throws -> Promise<Void>
   func isSegmentRecording() throws -> Promise<Bool>
+  func getRecordingSilenceMs() throws -> Promise<Double>
   func startPlayer(uri: String?, httpHeaders: Dictionary<String, String>?) throws -> Promise<String>
   func stopPlayer() throws -> Promise<String>
   func pausePlayer() throws -> Promise<String>
