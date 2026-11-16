@@ -643,8 +643,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         // Decode reason (which audio-routing event triggered this)
         var reasonString = "unknown"
+        var routeChangeReason: AVAudioSession.RouteChangeReason?
         if let reasonValue = notification.userInfo?[AVAudioSessionRouteChangeReasonKey] as? UInt,
            let reason = AVAudioSession.RouteChangeReason(rawValue: reasonValue) {
+            routeChangeReason = reason
             switch reason {
             case .unknown:                      reasonString = "unknown"
             case .newDeviceAvailable:           reasonString = "newDeviceAvailable (e.g. headphones plugged in)"
@@ -663,7 +665,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // "engine died on Bluetooth disconnect" reports).
         var prevOut = "unknown"
         var prevIn = "unknown"
-        if let prev = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription {
+        let previousRoute = notification.userInfo?[AVAudioSessionRouteChangePreviousRouteKey] as? AVAudioSessionRouteDescription
+        if let prev = previousRoute {
             prevOut = prev.outputs.map { $0.portName }.joined(separator: ", ")
             prevIn = prev.inputs.map { $0.portName }.joined(separator: ", ")
         }
@@ -680,6 +683,30 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         bridgedLog("   after    out=[\(newOut)]   in=[\(newIn)]  @ \(newRate)Hz")
         bridgedLog("   engine   running=\(audioEngine?.isRunning ?? false)   initialized=\(audioEngineInitialized)")
         logStateSnapshot(context: "route-change")
+
+        // DUS-3075: headphones went away (AirPods out of the ear or out of battery, a cable
+        // pulled) and iOS fell back to a route with no headphones, so the sound now plays out
+        // loud. Report it; JS decides what to quiet (the night mutes, a meditation pauses, an
+        // alarm keeps ringing). Port types, not names: the names carry the owner's name.
+        if routeChangeReason == .oldDeviceUnavailable,
+           let prev = previousRoute,
+           prev.outputs.contains(where: { Self.isHeadphonesPort($0.portType) }),
+           !session.currentRoute.outputs.contains(where: { Self.isHeadphonesPort($0.portType) }) {
+            let fromTypes = prev.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+            let toTypes = session.currentRoute.outputs.map { $0.portType.rawValue }.joined(separator: ",")
+            bridgedLog("   🎧 headphones disconnected → reporting to JS")
+            emitEngineEvent("headphonesDisconnected", "from=\(fromTypes);to=\(toTypes)")
+        }
+    }
+
+    /// Outputs that only the wearer hears: wired headphones and Bluetooth audio.
+    private static func isHeadphonesPort(_ portType: AVAudioSession.Port) -> Bool {
+        switch portType {
+        case .headphones, .bluetoothA2DP, .bluetoothHFP, .bluetoothLE:
+            return true
+        default:
+            return false
+        }
     }
 
     @objc private func handleMediaServicesReset(notification: Notification) {
