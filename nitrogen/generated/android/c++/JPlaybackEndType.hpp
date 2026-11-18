@@ -17,7 +17,7 @@ namespace margelo::nitro::sound {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ struct "PlaybackEndType" and the the Kotlin data class "PlaybackEndType".
+   * The C++ JNI bridge between the C++ struct "PlaybackEndType" and the Kotlin data class "PlaybackEndType".
    */
   struct JPlaybackEndType final: public jni::JavaClass<JPlaybackEndType> {
   public:
