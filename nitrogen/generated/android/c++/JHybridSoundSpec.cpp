@@ -549,16 +549,16 @@ namespace margelo::nitro::sound {
   std::vector<std::string> JHybridSoundSpec::getAllDebugLogPaths() {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JArrayClass<jni::JString>>()>("getAllDebugLogPaths");
     auto __result = method(_javaPart);
-    return [&]() {
-      size_t __size = __result->size();
+    return [&](auto&& __input) {
+      size_t __size = __input->size();
       std::vector<std::string> __vector;
       __vector.reserve(__size);
       for (size_t __i = 0; __i < __size; __i++) {
-        auto __element = __result->getElement(__i);
+        auto __element = __input->getElement(__i);
         __vector.push_back(__element->toStdString());
       }
       return __vector;
-    }();
+    }(__result);
   }
   std::string JHybridSoundSpec::readDebugLog(const std::optional<std::string>& path) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<jni::JString>(jni::alias_ref<jni::JString> /* path */)>("readDebugLog");
@@ -616,16 +616,16 @@ namespace margelo::nitro::sound {
   }
   std::shared_ptr<Promise<double>> JHybridSoundSpec::concatAudioFiles(const std::vector<std::string>& inputPaths, const std::string& outputPath) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JArrayClass<jni::JString>> /* inputPaths */, jni::alias_ref<jni::JString> /* outputPath */)>("concatAudioFiles");
-    auto __result = method(_javaPart, [&]() {
-      size_t __size = inputPaths.size();
+    auto __result = method(_javaPart, [&](auto&& __input) {
+      size_t __size = __input.size();
       jni::local_ref<jni::JArrayClass<jni::JString>> __array = jni::JArrayClass<jni::JString>::newArray(__size);
       for (size_t __i = 0; __i < __size; __i++) {
-        const auto& __element = inputPaths[__i];
+        const auto& __element = __input[__i];
         auto __elementJni = jni::make_jstring(__element);
         __array->setElement(__i, *__elementJni);
       }
       return __array;
-    }(), jni::make_jstring(outputPath));
+    }(inputPaths), jni::make_jstring(outputPath));
     return [&]() {
       auto __promise = Promise<double>::create();
       __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& __boxedResult) {

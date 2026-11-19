@@ -15,7 +15,7 @@ namespace margelo::nitro::sound {
   using namespace facebook;
 
   /**
-   * The C++ JNI bridge between the C++ enum "AudioSessionMode" and the the Kotlin enum "AudioSessionMode".
+   * The C++ JNI bridge between the C++ enum "AudioSessionMode" and the Kotlin enum "AudioSessionMode".
    */
   struct JAudioSessionMode final: public jni::JavaClass<JAudioSessionMode> {
   public:

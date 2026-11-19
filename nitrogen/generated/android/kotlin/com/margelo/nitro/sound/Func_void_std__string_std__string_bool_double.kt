@@ -10,7 +10,6 @@ package com.margelo.nitro.sound
 import androidx.annotation.Keep
 import com.facebook.jni.HybridData
 import com.facebook.proguard.annotations.DoNotStrip
-import dalvik.annotation.optimization.FastNative
 
 
 /**
@@ -59,7 +58,6 @@ class Func_void_std__string_std__string_bool_double_cxx: Func_void_std__string_s
   override fun invoke(filename: String, filePath: String, isManual: Boolean, duration: Double): Unit
     = invoke_cxx(filename,filePath,isManual,duration)
 
-  @FastNative
   private external fun invoke_cxx(filename: String, filePath: String, isManual: Boolean, duration: Double): Unit
 }
 
