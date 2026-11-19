@@ -1108,30 +1108,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 try FileManager.default.createDirectory(at: outputDir, withIntermediateDirectories: true)
             }
 
-            // Initialize SPSC buffer for RT-safe audio pipeline
-            // samplesPerChunk must be >= actual tap buffer size (iOS gives ~4800 frames at 48kHz)
-            if spscBuffer == nil {
-                spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
-            }
-            spscBuffer?.reset()
-
-            // Store input format for file writing
-            self.workerInputFormat = hwFormat
-
-            // Initialize 16kHz target format for recording
-            self.targetFormat = AVAudioFormat(
-                commonFormat: .pcmFormatFloat32,
-                sampleRate: 16000,
-                channels: 1,
-                interleaved: false
-            )
-
-            // Create converter from hardware format (48kHz) to 16kHz
-            if let targetFmt = self.targetFormat {
-                self.audioConverter = AVAudioConverter(from: hwFormat, to: targetFmt)
-                bridgedLog("🎤 Audio converter initialized: \(hwFormat.sampleRate)Hz → \(targetFmt.sampleRate)Hz")
-            }
-
             // Install tap - RT-SAFE: copy-only, no processing, NO LOGGING
             // (Logging from RT audio thread can cause glitches via memory allocation & GCD locks)
             // Only RT-safe operations: increment counter + buffer writes.
@@ -1143,6 +1119,34 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // on isInputTapInstalled, a stale flag cannot wedge recording.
             var installError: Error?
             tapControlQueue.sync {
+                // The pipeline state below is replaced on every install, so it is
+                // written here on tapControlQueue: overlapping startRecorder calls
+                // must not swap the ring buffer or converter concurrently (DUS-3296).
+
+                // Initialize SPSC buffer for RT-safe audio pipeline
+                // samplesPerChunk must be >= actual tap buffer size (iOS gives ~4800 frames at 48kHz)
+                if spscBuffer == nil {
+                    spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
+                }
+                spscBuffer?.reset()
+
+                // Store input format for file writing
+                self.workerInputFormat = hwFormat
+
+                // Initialize 16kHz target format for recording
+                self.targetFormat = AVAudioFormat(
+                    commonFormat: .pcmFormatFloat32,
+                    sampleRate: 16000,
+                    channels: 1,
+                    interleaved: false
+                )
+
+                // Create converter from hardware format (48kHz) to 16kHz
+                if let targetFmt = self.targetFormat {
+                    self.audioConverter = AVAudioConverter(from: hwFormat, to: targetFmt)
+                    bridgedLog("🎤 Audio converter initialized: \(hwFormat.sampleRate)Hz → \(targetFmt.sampleRate)Hz")
+                }
+
                 do {
                     try ObjCExceptionCatcher.installTap(
                         on: inputNode,
