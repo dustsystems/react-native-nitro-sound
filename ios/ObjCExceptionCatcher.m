@@ -154,6 +154,23 @@ static NSError *NapErrorFromException(NSException *exception) {
     }
 }
 
++ (BOOL)primePlayer:(AVAudioPlayerNode *)player
+            silence:(AVAudioPCMBuffer *)silence
+              error:(NSError **)error {
+    @try {
+        [player scheduleBuffer:silence atTime:nil options:0 completionHandler:nil];
+        if (player.engine != nil && player.engine.isRunning) {
+            [player play];
+        }
+        return YES;
+    } @catch (NSException *exception) {
+        if (error) {
+            *error = NapErrorFromException(exception);
+        }
+        return NO;
+    }
+}
+
 + (BOOL)stopPlayer:(AVAudioPlayerNode *)player error:(NSError **)error {
     @try {
         if (player.engine != nil) {
