@@ -1163,6 +1163,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 } catch {
                     isInputTapInstalled = false
                     tapOwnedByRecorder = false
+                    // No tap writes this pipeline's ring, so drop it: recording and
+                    // command recognition then refuse instead of reading silence.
+                    setTapPipeline(nil)
                     installError = error
                 }
             }
@@ -1267,13 +1270,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // MARK: - Tap Pipeline (DUS-3299)
 
     /// The only writer of `tapPipeline`. Must run on tapControlQueue. The old
-    /// pipeline is released after the lock, by whoever drops the last snapshot.
+    /// pipeline is released after the lock (or later, by whoever drops the last
+    /// snapshot).
     private func setTapPipeline(_ pipeline: TapPipeline?) {
         tapPipelineLock.lock()
         let old = tapPipeline
         tapPipeline = pipeline
         tapPipelineLock.unlock()
-        _ = old
+        withExtendedLifetime(old) {}
     }
 
     /// One snapshot for a non-real-time reader. Never call on the RT thread.
@@ -2049,7 +2053,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // resets it (a reset while the tap is producing breaks the SPSC contract).
         // No pipeline means no tap to record from (DUS-3299).
         guard let pipeline = currentTapPipeline() else {
-            bridgedLog("❌ Cannot start recording session: targetFormat is nil")
+            bridgedLog("❌ Cannot start recording session: no recorder pipeline (targetFormat is nil)")
             return
         }
         // Start from "now": drop what queued up while nothing drained the ring.
