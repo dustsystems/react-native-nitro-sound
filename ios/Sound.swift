@@ -161,9 +161,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     // private var vadStreamState: VadStreamState?
     // private var vadThreshold: Float = 0.10  // 10% confidence - optimized for whisper detection (FluidAudio recommended 0.05-0.15)
 
-    // Audio format conversion (48kHz → 16kHz for VAD)
-    private var audioConverter: AVAudioConverter?
-    private var targetFormat: AVAudioFormat?  // 16kHz format for VAD and file writing
+    // Audio format conversion (48kHz → 16kHz) lives in `tapPipeline` (TapPipeline.swift).
 
     // Now Playing Info (lock screen controls)
     private var currentTrackTitle: String = "Hypnos"
@@ -177,7 +175,19 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // MARK: - RT-Safe Audio Pipeline (Phase 1: Session Recording)
     // Tap does copy-only to SPSC buffer, worker does all processing
-    private var spscBuffer: SPSCRingBuffer?
+    /// The recorder's ring buffer, formats and converter, replaced as one
+    /// immutable object (DUS-3299). Written only on tapControlQueue (installTap
+    /// builds a fresh one; stopRecorder and full teardown clear it), always
+    /// through setTapPipeline. Non-real-time readers take one snapshot per pass
+    /// with currentTapPipeline(); a snapshot keeps its pipeline alive, so a swap
+    /// can never free a converter or ring in use. The real-time tap never reads
+    /// this property: its block captures its own ring at install time.
+    private var tapPipeline: TapPipeline?
+    private let tapPipelineLock = NSLock()
+    /// The ring's overflow count when the current recording started, so the
+    /// stop log reports only this recording's drops (the ring is no longer
+    /// reset per recording, DUS-3299).
+    private var recordingOverflowBaseline: Int = 0
     private var processingQueue: DispatchQueue?
     private var processingTimer: DispatchSourceTimer?
     private var isRecordingSession: Bool = false
@@ -215,7 +225,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // Pre-allocated conversion buffer for worker (reused every chunk)
     private var workerConversionBuffer: AVAudioPCMBuffer?
-    private var workerInputFormat: AVAudioFormat?  // 48kHz format from hardware
 
     // MARK: - Live Voice-Command Recognition (single-engine, fed by the worker)
     // SFSpeechRecognizer runs INSIDE this engine, consuming the same 16kHz buffers
@@ -1119,33 +1128,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // on isInputTapInstalled, a stale flag cannot wedge recording.
             var installError: Error?
             tapControlQueue.sync {
-                // The pipeline state below is replaced on every install, so it is
-                // written here on tapControlQueue: overlapping startRecorder calls
-                // must not swap the ring buffer or converter concurrently (DUS-3296).
-
-                // Initialize SPSC buffer for RT-safe audio pipeline
-                // samplesPerChunk must be >= actual tap buffer size (iOS gives ~4800 frames at 48kHz)
-                if spscBuffer == nil {
-                    spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
+                // A fresh pipeline per install, never a reset of the old ring: the
+                // old tap may still be producing into it and a worker may still
+                // hold it (DUS-3299). Published on tapControlQueue, so overlapping
+                // startRecorder calls cannot swap it concurrently (DUS-3296).
+                let pipeline = TapPipeline(inputFormat: hwFormat)
+                if let pipeline {
+                    bridgedLog("🎤 Audio converter initialized: \(hwFormat.sampleRate)Hz → \(pipeline.targetFormat.sampleRate)Hz")
+                } else {
+                    bridgedLog("❌ Audio converter init failed for \(hwFormat); the tap runs without a recorder pipeline")
                 }
-                spscBuffer?.reset()
-
-                // Store input format for file writing
-                self.workerInputFormat = hwFormat
-
-                // Initialize 16kHz target format for recording
-                self.targetFormat = AVAudioFormat(
-                    commonFormat: .pcmFormatFloat32,
-                    sampleRate: 16000,
-                    channels: 1,
-                    interleaved: false
-                )
-
-                // Create converter from hardware format (48kHz) to 16kHz
-                if let targetFmt = self.targetFormat {
-                    self.audioConverter = AVAudioConverter(from: hwFormat, to: targetFmt)
-                    bridgedLog("🎤 Audio converter initialized: \(hwFormat.sampleRate)Hz → \(targetFmt.sampleRate)Hz")
-                }
+                setTapPipeline(pipeline)
 
                 do {
                     try ObjCExceptionCatcher.installTap(
@@ -1153,7 +1146,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                         bus: 0,
                         bufferSize: 1024,
                         format: hwFormat,
-                        block: makeInputTapBlock(),
+                        block: makeInputTapBlock(ring: pipeline?.ring),
                         removeFirst: true
                     )
                     isInputTapInstalled = true
@@ -1191,12 +1184,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// Fan-out order: recorder/voice-command SPSC ring first (worker drains it),
     /// then sleep capture's own SPSC ring when armed. Each consumer that is
     /// inactive costs a single branch.
-    private func makeInputTapBlock() -> (AVAudioPCMBuffer, AVAudioTime) -> Void {
+    ///
+    /// `ring` is the current pipeline's ring at install time, or nil when no
+    /// recorder pipeline exists. The block holds it strongly and never reads
+    /// `tapPipeline`, so the real-time thread takes no lock and a pipeline swap
+    /// cannot free the ring under it (DUS-3299). Every install site runs on
+    /// tapControlQueue, where the pipeline is written.
+    private func makeInputTapBlock(ring: SPSCRingBuffer?) -> (AVAudioPCMBuffer, AVAudioTime) -> Void {
         return { [weak self] buffer, _ in
             guard let self = self else { return }
             self.tapCallbackCounter += 1  // RT-safe: simple int increment
-            if let spsc = self.spscBuffer {
-                _ = spsc.write(buffer)
+            if let ring {
+                _ = ring.write(buffer)
             }
             // Acquire load pairs with the release store in
             // setSleepCaptureFanOutArmed, so an RT thread that observes
@@ -1265,6 +1264,38 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         isTapLoggingThrottled = false
     }
 
+    // MARK: - Tap Pipeline (DUS-3299)
+
+    /// The only writer of `tapPipeline`. Must run on tapControlQueue. The old
+    /// pipeline is released after the lock, by whoever drops the last snapshot.
+    private func setTapPipeline(_ pipeline: TapPipeline?) {
+        tapPipelineLock.lock()
+        let old = tapPipeline
+        tapPipeline = pipeline
+        tapPipelineLock.unlock()
+        _ = old
+    }
+
+    /// One snapshot for a non-real-time reader. Never call on the RT thread.
+    private func currentTapPipeline() -> TapPipeline? {
+        tapPipelineLock.lock()
+        defer { tapPipelineLock.unlock() }
+        return tapPipeline
+    }
+
+    /// Discards everything queued in `pipeline`'s ring, consumer side, so a new
+    /// sink starts from "now". The worker drains on processingQueue, so the
+    /// discard runs there too when the queue exists: it can never overlap a
+    /// drain, which keeps the ring single-consumer. Without a queue no worker
+    /// exists. Callers are never on processingQueue.
+    private func discardQueuedChunks(in pipeline: TapPipeline) {
+        if let queue = processingQueue {
+            queue.sync { pipeline.discardQueuedChunks() }
+        } else {
+            pipeline.discardQueuedChunks()
+        }
+    }
+
     // MARK: - Debug Helpers
 
     /// Input sample rate for diagnostics. A playback session (DUS-1956) has no
@@ -1280,7 +1311,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         // Recording state (note: no API to check if tap is installed - only buffer flow confirms it)
         let hasSegment = currentSegmentFile != nil
-        let bufferCount = spscBuffer?.availableChunks ?? 0
+        let bufferCount = currentTapPipeline()?.ring.availableChunks ?? 0
 
         // Engine state
         let engineInit = audioEngineInitialized
@@ -1358,21 +1389,21 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     if spsc_load_acquire_i64(self.sleepCaptureFanOutArmed) != 0 {
                         self.tapOwnedByRecorder = false
                         self.bridgedLog("🎙️🟡 RECORDING TAP RETAINED - sleep capture still consuming it")
-                        // Deliberately NOT nil-ing spscBuffer here: the live tap
-                        // callback still reads it, and a Swift strong-ref store is
-                        // not safe against a concurrent RT read. The ring just fills
-                        // and rejects writes (cheap); the next startRecorder resets it.
+                        // The pipeline stays: the live tap still writes its ring and
+                        // command recognition may still need it. The ring just fills
+                        // and rejects writes (cheap); the next startRecorder installs
+                        // a fresh pipeline.
                     } else {
                         engine.inputNode.removeTap(onBus: 0)
                         self.isInputTapInstalled = false
                         self.tapOwnedByRecorder = false
                         self.stopTapMonitor()
                         self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED - mic indicator should disappear if tap was the cause")
-                        // Clean up SPSC buffer (only when the tap is actually gone).
-                        self.spscBuffer = nil
+                        // Drop the pipeline (only when the tap is actually gone).
+                        self.setTapPipeline(nil)
                     }
                 } else {
-                    self.spscBuffer = nil
+                    self.setTapPipeline(nil)
                 }
             }
 
@@ -1486,6 +1517,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 self.stopTapMonitor()
                 self.bridgedLog("🎙️⚪ RECORDING TAP REMOVED (endEngineSession)")
             }
+            // Recording resources (was step 7): the pipeline is cleared here, on
+            // tapControlQueue after the tap is gone, like every pipeline write (DUS-3299).
+            self.setTapPipeline(nil)
         }
 
         // Steps 4-6: stop, deactivate, and destroy the engine — serialized on
@@ -1524,8 +1558,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
 
         // Step 7: Clean up recording resources
+        // (the tap pipeline was cleared in step 3)
         self.currentSegmentFile = nil
-        self.spscBuffer = nil
         self.processingTimer = nil
         self.processingQueue = nil
         // DISABLED: VAD cleanup
@@ -1881,8 +1915,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.fixedDurationTimer?.cancel()
             self.fixedDurationTimer = nil
 
-            // Verify target format is available
-            guard self.targetFormat != nil else {
+            // Verify the recorder pipeline (and so the target format) is available
+            guard self.currentTapPipeline() != nil else {
                 promise.reject(withError: RuntimeError.error(withMessage: "Target format not initialized"))
                 return
             }
@@ -2011,12 +2045,16 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// Start the recording session - activates worker to drain SPSC buffer and write to file
     /// Called when user starts recording (dream recording, day residue, etc.)
     private func startRecordingSession(fileURL: URL) {
-        // Create SPSC buffer if not exists
-        // samplesPerChunk must be >= actual tap buffer size (iOS gives ~4800 frames at 48kHz)
-        if spscBuffer == nil {
-            spscBuffer = SPSCRingBuffer(capacity: 64, samplesPerChunk: 8192)
+        // The ring belongs to installTap's pipeline; recording never creates or
+        // resets it (a reset while the tap is producing breaks the SPSC contract).
+        // No pipeline means no tap to record from (DUS-3299).
+        guard let pipeline = currentTapPipeline() else {
+            bridgedLog("❌ Cannot start recording session: targetFormat is nil")
+            return
         }
-        spscBuffer?.reset()
+        // Start from "now": drop what queued up while nothing drained the ring.
+        discardQueuedChunks(in: pipeline)
+        recordingOverflowBaseline = pipeline.ring.overflows
         workerChunkCounter = 0  // Reset debug counters for new session
         // Reset the tap monitor's baseline with the counter, or its next tick compares the
         // fresh count against the pre-recording total and logs a false TAP STALLED (DUS-1861).
@@ -2028,13 +2066,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
 
         // Open file for writing at 16kHz format
-        guard let targetFormat = self.targetFormat else {
-            bridgedLog("❌ Cannot start recording session: targetFormat is nil")
-            return
-        }
-
         do {
-            currentSegmentFile = try AVAudioFile(forWriting: fileURL, settings: targetFormat.settings)
+            currentSegmentFile = try AVAudioFile(forWriting: fileURL, settings: pipeline.targetFormat.settings)
             segmentStartTime = Date()
             isRecordingSession = true
             bridgedLog("🎙️ Recording session started: \(fileURL.lastPathComponent)")
@@ -2093,8 +2126,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
 
         // Check for overflow during session
-        if let spsc = spscBuffer {
-            let overflows = spsc.overflows
+        if let pipeline = currentTapPipeline() {
+            // A pipeline swapped mid-recording has its own count; clamp, don't go negative.
+            let overflows = max(0, pipeline.ring.overflows - recordingOverflowBaseline)
             if overflows > 0 {
                 bridgedLog("⚠️ Recording had \(overflows) buffer overflows (dropped audio)")
             }
@@ -2110,7 +2144,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// SIMPLIFIED: No VAD or silence detection - just resample and write
     private func drainAndProcess() {
         // Worker runs while EITHER sink needs audio: file recording or live command recognition.
-        guard isRecordingSession || isCommandRecognitionActive, let spsc = spscBuffer else { return }
+        // One pipeline snapshot per pass: ring and converter stay consistent and
+        // alive for the whole pass even if installTap swaps them (DUS-3299).
+        guard isRecordingSession || isCommandRecognitionActive, let pipeline = currentTapPipeline() else { return }
+        let spsc = pipeline.ring
 
         // Process all available chunks
         while let (samples48k, frameLength) = spsc.read() {
@@ -2125,7 +2162,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             }
 
             // 1. Resample 48kHz → 16kHz
-            guard let samples16k = resampleOnWorker(samples48k, frameLength: frameLength) else {
+            guard let samples16k = resampleOnWorker(samples48k, frameLength: frameLength, pipeline: pipeline) else {
                 continue
             }
 
@@ -2153,13 +2190,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// - Parameters:
     ///   - samples48k: Pointer to 48kHz float samples from SPSC buffer
     ///   - frameLength: Number of frames in the buffer
+    ///   - pipeline: The caller's snapshot; its formats match the ring the samples came from
     /// - Returns: AVAudioPCMBuffer at 16kHz or nil on failure
-    private func resampleOnWorker(_ samples48k: UnsafePointer<Float>, frameLength: Int) -> AVAudioPCMBuffer? {
-        guard let inputFormat = workerInputFormat,
-              let converter = audioConverter,
-              let targetFormat = targetFormat else {
-            return nil
-        }
+    private func resampleOnWorker(_ samples48k: UnsafePointer<Float>, frameLength: Int, pipeline: TapPipeline) -> AVAudioPCMBuffer? {
+        let inputFormat = pipeline.inputFormat
+        let converter = pipeline.converter
+        let targetFormat = pipeline.targetFormat
 
         // Create input buffer wrapper around the raw samples
         guard let inputBuffer = AVAudioPCMBuffer(pcmFormat: inputFormat, frameCapacity: AVAudioFrameCount(frameLength)) else {
@@ -3768,7 +3804,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
             // Requires a live engine + input tap — both are set up at Start Journey.
-            guard let engine = self.audioEngine, engine.isRunning, self.spscBuffer != nil else {
+            guard let engine = self.audioEngine, engine.isRunning, let pipeline = self.currentTapPipeline() else {
                 promise.reject(withError: RuntimeError.error(
                     withMessage: "Command recognition requires a running engine + input tap"))
                 return
@@ -3789,7 +3825,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // Discard audio that piled up in the ring buffer while no consumer was
             // draining it, so recognition starts from "now", not minutes-old audio.
-            while self.spscBuffer?.read() != nil {}
+            self.discardQueuedChunks(in: pipeline)
 
             self.isCommandRecognitionActive = true
             self.startCommandRecognitionTask()
@@ -4043,7 +4079,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                         bus: 0,
                         bufferSize: 1024,
                         format: hwFormat,
-                        block: makeInputTapBlock(),
+                        block: makeInputTapBlock(ring: currentTapPipeline()?.ring),
                         removeFirst: false
                     )
                     isInputTapInstalled = true
@@ -4078,7 +4114,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                                 bus: 0,
                                 bufferSize: 1024,
                                 format: hw,
-                                block: makeInputTapBlock(),
+                                block: makeInputTapBlock(ring: currentTapPipeline()?.ring),
                                 removeFirst: false
                             )
                             isInputTapInstalled = true
