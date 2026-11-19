@@ -2753,9 +2753,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     // subject, since it may be a new engine this node is not on.
                     // This narrows the window; it does not close it, as the check
                     // and the play are not atomic with a teardown on another queue.
+                    // A phone call during an alarm stops the engine inside that
+                    // window and play() trapped (DUS-3322), so the play itself runs
+                    // inside ObjCExceptionCatcher, as the reconnect and tap installs
+                    // do (:570, :1144); a caught exception skips the play as below.
                     if let engine = playerNode.engine, engine.isRunning {
-                        playerNode.play()
-                        self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
+                        do {
+                            try ObjCExceptionCatcher.play(playerNode)
+                            self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
+                        } catch {
+                            self.bridgedLog("⚠️ SKIPPED PLAY — play() raised (Node \(self.getNodeName(for: playerNode))): \(error.localizedDescription)")
+                        }
                     } else {
                         self.bridgedLog("⚠️ SKIPPED PLAY — engine torn down before main-queue play (Node \(self.getNodeName(for: playerNode)))")
                     }

@@ -66,4 +66,20 @@ NSString *const ObjCExceptionCatcherErrorDomain = @"ObjCException";
     }
 }
 
++ (BOOL)playNode:(AVAudioPlayerNode *)node error:(NSError **)error {
+    @try {
+        [node play];
+        return YES;
+    } @catch (NSException *exception) {
+        if (error) {
+            NSDictionary *userInfo = @{
+                NSLocalizedDescriptionKey : exception.reason ?: @"unknown ObjC exception",
+                @"ExceptionName" : exception.name ?: @"unknown",
+            };
+            *error = [NSError errorWithDomain:ObjCExceptionCatcherErrorDomain code:-1 userInfo:userInfo];
+        }
+        return NO;
+    }
+}
+
 @end
