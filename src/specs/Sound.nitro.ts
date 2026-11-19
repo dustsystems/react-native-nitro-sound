@@ -215,6 +215,11 @@ export interface Sound
    *  - 'revived': the loop had stopped (engine restart) and was queued again.
    *  - 'no_loop': that layer has no loop; nothing was done.
    *  - 'engine_dead': no running engine, and it would not restart.
+   *
+   * Layer -1 is not a ramp: it runs 150 ms of silence at volume 0 through
+   * layer 0's player, to be called once before its first loop (then wait for
+   * the silence to pass). Resolves 'primed', 'no_loop' when a loop is already
+   * playing there (or on a build without this), or 'error'.
    */
   rampAmbientVolume(layer: number, volume: number, durationMs: number): Promise<string>;
 

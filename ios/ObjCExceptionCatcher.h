@@ -68,6 +68,13 @@ NS_ASSUME_NONNULL_BEGIN
                      refill:(AVAudioNodeCompletionHandler)refill
                       error:(NSError **)error NS_SWIFT_NAME(restartLoop(on:file:refill:));
 
+/// Nap mode (experiment), additive. Queues `silence` on `player` with no completion handler
+/// and plays it, inside `@try/@catch`. `play` is only called while the node's engine is
+/// running. Used to run a player at volume 0 for a moment before its first loop.
++ (BOOL)primePlayer:(AVAudioPlayerNode *)player
+            silence:(AVAudioPCMBuffer *)silence
+              error:(NSError **)error NS_SWIFT_NAME(primePlayer(_:silence:));
+
 /// Nap mode (experiment), additive. Stops `player` if it is still attached to an engine,
 /// inside `@try/@catch`.
 + (BOOL)stopPlayer:(AVAudioPlayerNode *)player

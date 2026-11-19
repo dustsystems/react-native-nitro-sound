@@ -4895,6 +4895,44 @@ extension HybridSound {
                 return
             }
 
+            // Layer -1 is not a ramp: it primes layer 0's player (node D) before
+            // its first loop. The mixer only applies a player's volume while that
+            // player is producing sound, so a loop "started at volume 0" on a
+            // player that has never run comes out at full for about 25 ms and
+            // slides down: a loud click with the nap's hot loop files. A moment
+            // of silence at volume 0 first, and the player really is at 0. No
+            // completion handler and no stop, so nothing here can wait on one.
+            if Int(layer.rounded()) == -1 {
+                guard !self.isAmbientLoopPlaying,
+                      let node = self.audioPlayerNodeD, node.engine === engine else {
+                    promise.resolve(withResult: "no_loop")
+                    return
+                }
+                let format = node.outputFormat(forBus: 0)
+                let frames = AVAudioFrameCount(max(0, format.sampleRate) * 0.15)
+                guard frames > 0, format.channelCount > 0,
+                      let silence = AVAudioPCMBuffer(pcmFormat: format, frameCapacity: frames),
+                      let channels = silence.floatChannelData else {
+                    promise.resolve(withResult: "error")
+                    return
+                }
+                silence.frameLength = frames
+                for channel in 0..<Int(format.channelCount) {
+                    memset(channels[channel], 0, Int(frames) * MemoryLayout<Float>.size)
+                }
+                node.volume = 0
+                do {
+                    try ObjCExceptionCatcher.primePlayer(node, silence: silence)
+                } catch {
+                    self.bridgedLog("⚠️ AMBIENT prime failed: \(error.localizedDescription)")
+                    promise.resolve(withResult: "error")
+                    return
+                }
+                self.bridgedLog("🎵 AMBIENT node D primed with 150 ms of silence at volume 0")
+                promise.resolve(withResult: "primed")
+                return
+            }
+
             let isLayerB = Int(layer.rounded()) == 1
             let playing = isLayerB ? self.isAmbientLoopBPlaying : self.isAmbientLoopPlaying
             let controller = isLayerB ? self.ambientVolumeB : self.ambientVolume
