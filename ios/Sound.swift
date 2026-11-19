@@ -152,7 +152,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var workerChunkCounter: Int = 0  // Debug counter for worker thread logging
     private var tapCallbackCounter: Int = 0  // Tap callback counter (incremented RT-safely, logged from worker)
     private var lastLoggedTapCount: Int = 0  // Track what we last logged to detect tap activity
-    private var tapMonitorTimer: DispatchSourceTimer?  // Logs tap activity periodically (runs on main queue, not RT)
+    private var tapMonitorTimer: DispatchSourceTimer?  // Logs tap activity periodically (fires on tapControlQueue, not RT)
     private var tapInstallTime: Date?  // When tap was installed (for throttling after 30 minutes)
     private var isTapLoggingThrottled: Bool = false  // Whether we've switched to 15-minute logging intervals
 
@@ -1154,6 +1154,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     )
                     isInputTapInstalled = true
                     tapOwnedByRecorder = true
+
+                    // Start the tap monitor here, on tapControlQueue, so it is
+                    // serialized with every stopTapMonitor() (stopRecorder,
+                    // endEngineSession, sleep-capture disarm). It logs every
+                    // 5 s that the tap is receiving data, then every 15 min.
+                    tapCallbackCounter = 0
+                    lastLoggedTapCount = 0
+                    tapInstallTime = Date()
+                    startTapMonitor()
                 } catch {
                     isInputTapInstalled = false
                     tapOwnedByRecorder = false
@@ -1163,14 +1172,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             if let installError {
                 throw installError
             }
-
-            // Start tap monitor timer - logs every 5 seconds to confirm tap is receiving data
-            // (switches to 15-minute intervals after 30 minutes to reduce log noise during overnight sessions)
-            self.tapCallbackCounter = 0
-            self.lastLoggedTapCount = 0
-            self.tapInstallTime = Date()
-            self.isTapLoggingThrottled = false
-            self.startTapMonitor()
 
             self.bridgedLog("🎙️🟠 TAP INSTALLED")
             promise.resolve(withResult: ())
@@ -1205,13 +1206,21 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     // MARK: - Tap Monitor (logs tap activity from non-RT thread)
 
+    /// Must run on tapControlQueue. The timer fires on tapControlQueue too, so
+    /// the timer property, the throttle flag and the logged-count baseline are
+    /// only ever touched on that one serial queue (DUS-3296).
+    ///
+    /// The timer is created, scheduled and resumed in a local before it is
+    /// stored: libdispatch traps when the last reference to a never-resumed
+    /// source is released, so an inactive timer must never be reachable from
+    /// the property, where a stop could drop it (DUS-3296).
     private func startTapMonitor() {
         stopTapMonitor()  // Cancel any existing timer
 
-        tapMonitorTimer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .utility))
-        tapMonitorTimer?.schedule(deadline: .now() + 5.0, repeating: 5.0)  // Log every 5 seconds initially
-        tapMonitorTimer?.setEventHandler { [weak self] in
-            guard let self = self else { return }
+        let timer = DispatchSource.makeTimerSource(queue: tapControlQueue)
+        timer.schedule(deadline: .now() + 5.0, repeating: 5.0)  // Log every 5 seconds initially
+        timer.setEventHandler { [weak self, weak timer] in
+            guard let self = self, let timer = timer else { return }
             let currentCount = self.tapCallbackCounter
             let delta = currentCount - self.lastLoggedTapCount
             self.lastLoggedTapCount = currentCount
@@ -1233,13 +1242,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                let startTime = self.tapInstallTime,
                Date().timeIntervalSince(startTime) >= fifteenMinutes {
                 self.isTapLoggingThrottled = true
-                self.tapMonitorTimer?.schedule(deadline: .now() + fifteenMinutes, repeating: fifteenMinutes)
+                timer.schedule(deadline: .now() + fifteenMinutes, repeating: fifteenMinutes)
                 self.bridgedLog("🎤 Switching to 15-minute logging intervals")
             }
         }
-        tapMonitorTimer?.resume()
+        timer.resume()
+        tapMonitorTimer = timer
     }
 
+    /// Runs on tapControlQueue, except from deinit, where no other reference
+    /// to self exists (a sync there could deadlock if the last release happens
+    /// on tapControlQueue).
     private func stopTapMonitor() {
         tapMonitorTimer?.cancel()
         tapMonitorTimer = nil
@@ -2001,10 +2014,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
         spscBuffer?.reset()
         workerChunkCounter = 0  // Reset debug counters for new session
-        tapCallbackCounter = 0
         // Reset the tap monitor's baseline with the counter, or its next tick compares the
         // fresh count against the pre-recording total and logs a false TAP STALLED (DUS-1861).
-        lastLoggedTapCount = 0
+        // On tapControlQueue, where the monitor reads them (DUS-3296). Callers run on
+        // DispatchQueue.global, never on tapControlQueue.
+        tapControlQueue.sync {
+            tapCallbackCounter = 0
+            lastLoggedTapCount = 0
+        }
 
         // Open file for writing at 16kHz format
         guard let targetFormat = self.targetFormat else {
