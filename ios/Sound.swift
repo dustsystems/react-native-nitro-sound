@@ -188,9 +188,23 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// stop log reports only this recording's drops (the ring is no longer
     /// reset per recording, DUS-3299).
     private var recordingOverflowBaseline: Int = 0
-    private var processingQueue: DispatchQueue?
+    /// The worker's queue. One queue for the object's whole life, so no caller
+    /// can read it half-written (DUS-3305).
+    private let processingQueue = DispatchQueue(label: "com.hypnos.audioProcessing", qos: .userInitiated)
+    /// Written only on recordingControlQueue.
     private var processingTimer: DispatchSourceTimer?
+    /// Written only on recordingControlQueue, inside a processingQueue.sync so
+    /// the worker sees each change before its next pass.
     private var isRecordingSession: Bool = false
+    /// Serializes recording-session start/stop, the fixed-duration timer and
+    /// worker start/stop (DUS-3305). Before this, beginRecording, endRecording
+    /// and the duration timer ran on DispatchQueue.global, so two of them could
+    /// cancel and release processingTimer at once and crash in stopWorkerIfIdle.
+    /// Lock order: commandControlQueue, then recordingControlQueue, then
+    /// processingQueue or tapControlQueue. Blocks on processingQueue and
+    /// tapControlQueue never sync onto this queue or commandControlQueue, and
+    /// the real-time tap never touches any of them.
+    private let recordingControlQueue = DispatchQueue(label: "com.hypnos.recordingControl")
 
     // MARK: - Sleep-Capture Tap Fan-Out (third consumer of the ONE input tap)
     // Sleep-talking capture consumes the same persistent input tap as dream
@@ -1289,15 +1303,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     /// Discards everything queued in `pipeline`'s ring, consumer side, so a new
     /// sink starts from "now". The worker drains on processingQueue, so the
-    /// discard runs there too when the queue exists: it can never overlap a
-    /// drain, which keeps the ring single-consumer. Without a queue no worker
-    /// exists. Callers are never on processingQueue.
+    /// discard runs there too: it can never overlap a drain, which keeps the
+    /// ring single-consumer. Callers are never on processingQueue.
     private func discardQueuedChunks(in pipeline: TapPipeline) {
-        if let queue = processingQueue {
-            queue.sync { pipeline.discardQueuedChunks() }
-        } else {
-            pipeline.discardQueuedChunks()
-        }
+        processingQueue.sync { pipeline.discardQueuedChunks() }
     }
 
     // MARK: - Debug Helpers
@@ -1372,9 +1381,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
 
-            // Stop recording session if active
-            if self.isRecordingSession {
-                self.stopRecordingSession()
+            // Stop recording session if active. This block runs on
+            // DispatchQueue.global, so the sync is safe (DUS-3305).
+            self.recordingControlQueue.sync {
+                if self.isRecordingSession {
+                    self.stopRecordingSession()
+                }
             }
 
             // DISABLED: Stop VAD monitoring if active (autoVAD mode)
@@ -1469,19 +1481,21 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         self.engineControlQueue.sync { self.teardownInFlight = true }
 
         // Step 1: Stop recording session if active
-        if self.isRecordingSession {
-            self.stopRecordingSession()
-        }
-
         // Step 1b: Stop fixed duration timer if active
-        self.fixedDurationTimer?.cancel()
-        self.fixedDurationTimer = nil
+        // Both on recordingControlQueue, like every recording start/stop (DUS-3305).
+        self.recordingControlQueue.sync {
+            if self.isRecordingSession {
+                self.stopRecordingSession()
+            }
+            self.fixedDurationTimer?.cancel()
+            self.fixedDurationTimer = nil
+        }
 
         // Step 1c: Stop live command recognition if active (defensive — the
         // alarm flow normally calls stopCommandRecognition() on its own).
         self.commandControlQueue.sync {
             guard self.isCommandRecognitionActive else { return }
-            self.isCommandRecognitionActive = false
+            self.recordingControlQueue.sync { self.isCommandRecognitionActive = false }
             self.commandRestartWorkItem?.cancel()
             self.commandRestartWorkItem = nil
             self.commandRequest?.endAudio()
@@ -1562,10 +1576,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         }
 
         // Step 7: Clean up recording resources
-        // (the tap pipeline was cleared in step 3)
-        self.currentSegmentFile = nil
-        self.processingTimer = nil
-        self.processingQueue = nil
+        // (the tap pipeline was cleared in step 3). The worker timer is
+        // cancelled, not just released, on recordingControlQueue (DUS-3305).
+        self.recordingControlQueue.sync {
+            self.processingTimer?.cancel()
+            self.processingTimer = nil
+            self.currentSegmentFile = nil
+            self.processingQueue.sync { self.isRecordingSession = false }
+        }
         // DISABLED: VAD cleanup
         // self.vadManager = nil
         // self.vadStreamState = nil
@@ -1581,7 +1599,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         // Step 9: Reset recording state
         // DISABLED: self.currentMode = .idle
-        self.isRecordingSession = false
+        // (isRecordingSession was reset in step 7)
 
         self.bridgedLog("✅ endEngineSession() completed")
     }
@@ -1903,7 +1921,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         SleepCapture.shared.pauseForDreamRecording()
         let promise = Promise<Void>()
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        // On recordingControlQueue, so an overlapping endRecording, duration
+        // timer or teardown cannot run the same start/stop at once (DUS-3305).
+        recordingControlQueue.async { [weak self] in
             guard let self = self else {
                 promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
                 return
@@ -1950,8 +1970,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             formatter.dateFormat = "HH:mm:ss.SSS"
             self.bridgedLog("🎙️ Recording started at \(formatter.string(from: now)) (max duration: \(Int(maxDurationSeconds))s)")
 
-            // Start fixed duration timer
-            let timer = DispatchSource.makeTimerSource(queue: DispatchQueue.global(qos: .userInitiated))
+            // Start fixed duration timer. It fires on recordingControlQueue, so
+            // its stop is serialized with every other start/stop (DUS-3305).
+            let timer = DispatchSource.makeTimerSource(queue: self.recordingControlQueue)
             timer.schedule(deadline: .now() + maxDurationSeconds)
             timer.setEventHandler { [weak self] in
                 guard let self = self else { return }
@@ -1975,7 +1996,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         SleepCapture.shared.resumeAfterDreamRecording()
         let promise = Promise<Void>()
 
-        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+        recordingControlQueue.async { [weak self] in
             guard let self = self else {
                 promise.reject(withError: RuntimeError.error(withMessage: "Self is nil"))
                 return
@@ -1996,6 +2017,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     /**
      * Internal method to stop recording and fire callback
+     * Must run on recordingControlQueue (DUS-3305).
      */
     private func stopRecordingInternal(wasManualStop: Bool) {
         // Cancel the timer
@@ -2010,10 +2032,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         // Stop the recording session
         guard self.isRecordingSession else { return }
-        self.isRecordingSession = false
+        processingQueue.sync { self.isRecordingSession = false }
 
         // Drain remaining samples synchronously
-        processingQueue?.sync { [weak self] in
+        processingQueue.sync { [weak self] in
             self?.drainAndProcess()
         }
 
@@ -2048,6 +2070,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     /// Start the recording session - activates worker to drain SPSC buffer and write to file
     /// Called when user starts recording (dream recording, day residue, etc.)
+    /// Must run on recordingControlQueue (DUS-3305).
     private func startRecordingSession(fileURL: URL) {
         // The ring belongs to installTap's pipeline; recording never creates or
         // resets it (a reset while the tap is producing breaks the SPSC contract).
@@ -2063,7 +2086,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Reset the tap monitor's baseline with the counter, or its next tick compares the
         // fresh count against the pre-recording total and logs a false TAP STALLED (DUS-1861).
         // On tapControlQueue, where the monitor reads them (DUS-3296). Callers run on
-        // DispatchQueue.global, never on tapControlQueue.
+        // recordingControlQueue, never on tapControlQueue (DUS-3305).
         tapControlQueue.sync {
             tapCallbackCounter = 0
             lastLoggedTapCount = 0
@@ -2071,9 +2094,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         // Open file for writing at 16kHz format
         do {
-            currentSegmentFile = try AVAudioFile(forWriting: fileURL, settings: pipeline.targetFormat.settings)
+            let segmentFile = try AVAudioFile(forWriting: fileURL, settings: pipeline.targetFormat.settings)
             segmentStartTime = Date()
-            isRecordingSession = true
+            // Published on processingQueue, so a worker that is already running
+            // for command recognition sees the file before the flag (DUS-3305).
+            processingQueue.sync {
+                currentSegmentFile = segmentFile
+                isRecordingSession = true
+            }
             bridgedLog("🎙️ Recording session started: \(fileURL.lastPathComponent)")
         } catch {
             bridgedLog("❌ Failed to create segment file: \(error.localizedDescription)")
@@ -2086,12 +2114,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     /// Start the SPSC-draining worker if it isn't already running. Idempotent —
     /// shared by recording sessions and live command recognition, so the worker
-    /// stays up as long as EITHER sink is active.
+    /// stays up as long as EITHER sink is active. Must run on
+    /// recordingControlQueue (DUS-3305).
     private func ensureWorkerRunning() {
         guard processingTimer == nil else { return }
-        if processingQueue == nil {
-            processingQueue = DispatchQueue(label: "com.hypnos.audioProcessing", qos: .userInitiated)
-        }
         let timer = DispatchSource.makeTimerSource(queue: processingQueue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(10))
         timer.setEventHandler { [weak self] in
@@ -2103,6 +2129,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
     /// Tear down the worker only when no sink needs it (neither recording nor
     /// command recognition active). Leaves the engine, tap, and SPSC buffer intact.
+    /// Must run on recordingControlQueue (DUS-3305).
     private func stopWorkerIfIdle() {
         guard !isRecordingSession, !isCommandRecognitionActive else { return }
         processingTimer?.cancel()
@@ -2110,13 +2137,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
 
     /// Stop the recording session - drains remaining audio and closes file
+    /// Must run on recordingControlQueue (DUS-3305).
     private func stopRecordingSession() {
         guard isRecordingSession else { return }
 
-        isRecordingSession = false
+        processingQueue.sync { isRecordingSession = false }
 
         // Drain remaining samples synchronously
-        processingQueue?.sync { [weak self] in
+        processingQueue.sync { [weak self] in
             self?.drainAndProcess()
         }
 
@@ -3835,27 +3863,32 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     withMessage: "Command recognition requires a running engine + input tap"))
                 return
             }
-            // Recording and command recognition share the single SPSC consumer —
-            // they must never run at once (FSM keeps them in separate phases).
-            guard !self.isRecordingSession else {
-                promise.reject(withError: RuntimeError.error(
-                    withMessage: "Cannot start command recognition during a recording session"))
-                return
-            }
             guard let recognizer = SFSpeechRecognizer(locale: Locale(identifier: "en-US")),
                   recognizer.isAvailable else {
                 promise.reject(withError: RuntimeError.error(withMessage: "Speech recognizer unavailable"))
                 return
             }
+            // Recording and command recognition share the single SPSC consumer —
+            // they must never run at once (FSM keeps them in separate phases).
+            // Checked and claimed on recordingControlQueue, where recording
+            // starts and stops (DUS-3305).
+            let recording: Bool = self.recordingControlQueue.sync {
+                guard !self.isRecordingSession else { return true }
+                // Discard audio that piled up in the ring buffer while no consumer was
+                // draining it, so recognition starts from "now", not minutes-old audio.
+                self.discardQueuedChunks(in: pipeline)
+                self.isCommandRecognitionActive = true
+                return false
+            }
+            guard !recording else {
+                promise.reject(withError: RuntimeError.error(
+                    withMessage: "Cannot start command recognition during a recording session"))
+                return
+            }
             self.commandRecognizer = recognizer
 
-            // Discard audio that piled up in the ring buffer while no consumer was
-            // draining it, so recognition starts from "now", not minutes-old audio.
-            self.discardQueuedChunks(in: pipeline)
-
-            self.isCommandRecognitionActive = true
             self.startCommandRecognitionTask()
-            self.ensureWorkerRunning()
+            self.recordingControlQueue.sync { self.ensureWorkerRunning() }
             self.bridgedLog("🎙️🟢 [VC] command recognition started")
             promise.resolve(withResult: ())
         }
@@ -3876,7 +3909,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
             // Stop the worker feeding the request before tearing the request down.
-            self.isCommandRecognitionActive = false
+            self.recordingControlQueue.sync { self.isCommandRecognitionActive = false }
             self.commandRestartWorkItem?.cancel()
             self.commandRestartWorkItem = nil
             self.commandRequest?.endAudio()
@@ -3884,7 +3917,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.commandTask = nil
             self.commandRequest = nil
             self.commandRecognizer = nil
-            self.stopWorkerIfIdle()
+            self.recordingControlQueue.sync { self.stopWorkerIfIdle() }
             self.bridgedLog("🎙️🔴 [VC] command recognition stopped")
             promise.resolve(withResult: ())
         }
