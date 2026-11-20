@@ -2932,8 +2932,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         self.loopCrossfadeTimer?.cancel()
         self.loopCrossfadeTimer = nil
         self.isLoopCrossfadeActive = false
+        // DUS-3323: an in-flight crossfade's fade-in completion would set
+        // currentPlayerNode/activePlayer back to its node after this stop.
+        self.cancelLoopFades()
 
-        // Stop AND RESET both player nodes
+        // Stop AND RESET all three playback nodes. A loop crossfades
+        // A→B→C→A (triggerSeamlessLoopCrossfade), so a loop stopped on its
+        // third pass is playing on C. DUS-3323: C used to be skipped here, so
+        // the annoying alarm kept ringing into the dream recording.
         if let playerA = self.audioPlayerNodeA {
             playerA.stop()
             playerA.reset()  // Clear all scheduled buffers and reset state
@@ -2945,6 +2951,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             playerB.reset()  // Clear all scheduled buffers and reset state
             playerB.volume = 1.0 // Reset volume
         }
+
+        if let playerC = self.audioPlayerNodeC {
+            playerC.stop()
+            playerC.reset()  // Clear all scheduled buffers and reset state
+            playerC.volume = 1.0 // Reset volume
+        }
+
+        self.bridgedLog("   playback nodes still playing after stop: \(self.anyPlayerNodePlaying())")
 
         // NOTE: Ambient loop (Player D) is NOT stopped here.
         // JS layer manages ambient lifecycle explicitly via stopAmbientLoop()
