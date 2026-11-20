@@ -2800,9 +2800,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     // subject, since it may be a new engine this node is not on.
                     // This narrows the window; it does not close it, as the check
                     // and the play are not atomic with a teardown on another queue.
+                    // A phone call during an alarm stops the engine inside that
+                    // window and play() trapped (DUS-3322), so the play itself runs
+                    // inside ObjCExceptionCatcher, as the reconnect and tap installs
+                    // do (:570, :1144); a caught exception skips the play as below.
                     if let engine = playerNode.engine, engine.isRunning {
-                        playerNode.play()
-                        self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
+                        do {
+                            try ObjCExceptionCatcher.play(playerNode)
+                            self.bridgedLog("🎵 PLAYING on Node \(self.getNodeName(for: playerNode)): \(url.lastPathComponent)")
+                        } catch {
+                            self.bridgedLog("⚠️ SKIPPED PLAY — play() raised (Node \(self.getNodeName(for: playerNode))): \(error.localizedDescription)")
+                        }
                     } else {
                         self.bridgedLog("⚠️ SKIPPED PLAY — engine torn down before main-queue play (Node \(self.getNodeName(for: playerNode)))")
                     }
@@ -2971,8 +2979,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         self.loopCrossfadeTimer?.cancel()
         self.loopCrossfadeTimer = nil
         self.isLoopCrossfadeActive = false
+        // DUS-3323: an in-flight crossfade's fade-in completion would set
+        // currentPlayerNode/activePlayer back to its node after this stop.
+        self.cancelLoopFades()
 
-        // Stop AND RESET both player nodes
+        // Stop AND RESET all three playback nodes. A loop crossfades
+        // A→B→C→A (triggerSeamlessLoopCrossfade), so a loop stopped on its
+        // third pass is playing on C. DUS-3323: C used to be skipped here, so
+        // the annoying alarm kept ringing into the dream recording.
         if let playerA = self.audioPlayerNodeA {
             playerA.stop()
             playerA.reset()  // Clear all scheduled buffers and reset state
@@ -2984,6 +2998,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             playerB.reset()  // Clear all scheduled buffers and reset state
             playerB.volume = 1.0 // Reset volume
         }
+
+        if let playerC = self.audioPlayerNodeC {
+            playerC.stop()
+            playerC.reset()  // Clear all scheduled buffers and reset state
+            playerC.volume = 1.0 // Reset volume
+        }
+
+        self.bridgedLog("   playback nodes still playing after stop: \(self.anyPlayerNodePlaying())")
 
         // NOTE: Ambient loop (Player D) is NOT stopped here.
         // JS layer manages ambient lifecycle explicitly via stopAmbientLoop()

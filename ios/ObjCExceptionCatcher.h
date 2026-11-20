@@ -43,6 +43,16 @@ NS_ASSUME_NONNULL_BEGIN
                    error:(NSError **)error
     NS_SWIFT_NAME(installTap(on:bus:bufferSize:format:block:removeFirst:));
 
+/// Starts `node` (`play`) — entirely in Objective-C, inside `@try/@catch`.
+///
+/// Same reason as the two methods above: `play` raises `NSException` when the node's engine
+/// is not running or the node is not connected, and an `isRunning` check before it cannot
+/// close that window, because the engine can be stopped on another queue between the check
+/// and the call (DUS-3322: a phone call during an alarm). Returns `YES` on success. On `NO`,
+/// `*error` is an `NSError` built from the caught `NSException` (domain `ObjCException`).
++ (BOOL)playNode:(AVAudioPlayerNode *)node
+           error:(NSError **)error NS_SWIFT_NAME(play(_:));
+
 @end
 
 NS_ASSUME_NONNULL_END
