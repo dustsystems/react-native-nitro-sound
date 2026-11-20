@@ -1309,25 +1309,6 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         processingQueue.sync { pipeline.discardQueuedChunks() }
     }
 
-    /// The pipeline a sleep-capture tap reinstall hands its block. Must run on
-    /// tapControlQueue, like every pipeline write. When the input format has
-    /// changed since the recorder's install (an audio route change), the old
-    /// converter no longer matches what the tap delivers, so a fresh pipeline
-    /// replaces it, built the way installTap builds one (DUS-3305). Without a
-    /// recorder pipeline there is nothing to rebuild.
-    private func pipelineForTapReinstall(format: AVAudioFormat) -> TapPipeline? {
-        guard let current = currentTapPipeline() else { return nil }
-        if current.inputFormat == format { return current }
-        let fresh = TapPipeline(inputFormat: format)
-        if fresh != nil {
-            bridgedLog("🎤 Tap reinstall: input format changed \(current.inputFormat.sampleRate)Hz → \(format.sampleRate)Hz, pipeline rebuilt")
-        } else {
-            bridgedLog("❌ Tap reinstall: converter init failed for \(format); the tap runs without a recorder pipeline")
-        }
-        setTapPipeline(fresh)
-        return fresh
-    }
-
     // MARK: - Debug Helpers
 
     /// Input sample rate for diagnostics. A playback session (DUS-1956) has no
@@ -2105,7 +2086,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Reset the tap monitor's baseline with the counter, or its next tick compares the
         // fresh count against the pre-recording total and logs a false TAP STALLED (DUS-1861).
         // On tapControlQueue, where the monitor reads them (DUS-3296). Callers run on
-        // DispatchQueue.global, never on tapControlQueue.
+        // recordingControlQueue, never on tapControlQueue (DUS-3305).
         tapControlQueue.sync {
             tapCallbackCounter = 0
             lastLoggedTapCount = 0
@@ -4157,7 +4138,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                         bus: 0,
                         bufferSize: 1024,
                         format: hwFormat,
-                        block: makeInputTapBlock(ring: pipelineForTapReinstall(format: hwFormat)?.ring),
+                        block: makeInputTapBlock(ring: currentTapPipeline()?.ring),
                         removeFirst: false
                     )
                     isInputTapInstalled = true
@@ -4192,7 +4173,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                                 bus: 0,
                                 bufferSize: 1024,
                                 format: hw,
-                                block: makeInputTapBlock(ring: pipelineForTapReinstall(format: hw)?.ring),
+                                block: makeInputTapBlock(ring: currentTapPipeline()?.ring),
                                 removeFirst: false
                             )
                             isInputTapInstalled = true
