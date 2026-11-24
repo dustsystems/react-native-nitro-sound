@@ -17,6 +17,10 @@ final class SpeechLevelTracker {
     private let minimumDb: Float = -60.0
     /// The floor follows a rising room slowly (SleepCapture's 3 dB per minute).
     private let floorRiseDbPerSecond: Float = 3.0 / 60.0
+    /// A chunk this quiet is digital silence (a route change or an
+    /// interruption feeding zeros), not the room: it never lowers the floor,
+    /// or steady room noise would count as speech for many minutes after.
+    private let digitalSilenceDb: Float = -100.0
 
     private let lock = NSLock()
     private var lastSpeechAt: Date?
@@ -40,6 +44,9 @@ final class SpeechLevelTracker {
         vDSP_rmsqv(samples, 1, &rms, vDSP_Length(frames))
         let levelDb = 20 * log10(max(rms, 1e-6))
         let seconds = Float(frames) / Float(buffer.format.sampleRate)
+
+        // Digital silence is neither speech nor room noise.
+        guard levelDb > digitalSilenceDb else { return }
 
         lock.lock()
         var floor = noiseFloorDb ?? levelDb
