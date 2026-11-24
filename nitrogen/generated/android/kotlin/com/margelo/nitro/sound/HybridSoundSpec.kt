@@ -64,6 +64,10 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
+  abstract fun getRecordingSilenceMs(): Promise<Double>
+  
+  @DoNotStrip
+  @Keep
   abstract fun startPlayer(uri: String?, httpHeaders: Map<String, String>?): Promise<String>
   
   @DoNotStrip

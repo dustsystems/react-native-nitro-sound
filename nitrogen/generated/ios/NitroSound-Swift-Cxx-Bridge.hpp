@@ -164,6 +164,40 @@ namespace margelo::nitro::sound::bridge::swift {
     return Func_void_bool_Wrapper(std::move(value));
   }
   
+  // pragma MARK: std::shared_ptr<Promise<double>>
+  /**
+   * Specialized version of `std::shared_ptr<Promise<double>>`.
+   */
+  using std__shared_ptr_Promise_double__ = std::shared_ptr<Promise<double>>;
+  inline std::shared_ptr<Promise<double>> create_std__shared_ptr_Promise_double__() noexcept {
+    return Promise<double>::create();
+  }
+  inline PromiseHolder<double> wrap_std__shared_ptr_Promise_double__(std::shared_ptr<Promise<double>> promise) noexcept {
+    return PromiseHolder<double>(std::move(promise));
+  }
+  
+  // pragma MARK: std::function<void(double /* result */)>
+  /**
+   * Specialized version of `std::function<void(double)>`.
+   */
+  using Func_void_double = std::function<void(double /* result */)>;
+  /**
+   * Wrapper class for a `std::function<void(double / * result * /)>`, this can be used from Swift.
+   */
+  class Func_void_double_Wrapper final {
+  public:
+    explicit Func_void_double_Wrapper(std::function<void(double /* result */)>&& func): _function(std::make_unique<std::function<void(double /* result */)>>(std::move(func))) {}
+    inline void call(double result) const noexcept {
+      _function->operator()(result);
+    }
+  private:
+    std::unique_ptr<std::function<void(double /* result */)>> _function;
+  } SWIFT_NONCOPYABLE;
+  Func_void_double create_Func_void_double(void* _Nonnull swiftClosureWrapper) noexcept;
+  inline Func_void_double_Wrapper wrap_Func_void_double(Func_void_double value) noexcept {
+    return Func_void_double_Wrapper(std::move(value));
+  }
+  
   // pragma MARK: std::optional<std::string>
   /**
    * Specialized version of `std::optional<std::string>`.
@@ -217,40 +251,6 @@ namespace margelo::nitro::sound::bridge::swift {
   }
   inline std::unordered_map<std::string, std::string> get_std__optional_std__unordered_map_std__string__std__string__(const std::optional<std::unordered_map<std::string, std::string>>& optional) noexcept {
     return optional.value();
-  }
-  
-  // pragma MARK: std::shared_ptr<Promise<double>>
-  /**
-   * Specialized version of `std::shared_ptr<Promise<double>>`.
-   */
-  using std__shared_ptr_Promise_double__ = std::shared_ptr<Promise<double>>;
-  inline std::shared_ptr<Promise<double>> create_std__shared_ptr_Promise_double__() noexcept {
-    return Promise<double>::create();
-  }
-  inline PromiseHolder<double> wrap_std__shared_ptr_Promise_double__(std::shared_ptr<Promise<double>> promise) noexcept {
-    return PromiseHolder<double>(std::move(promise));
-  }
-  
-  // pragma MARK: std::function<void(double /* result */)>
-  /**
-   * Specialized version of `std::function<void(double)>`.
-   */
-  using Func_void_double = std::function<void(double /* result */)>;
-  /**
-   * Wrapper class for a `std::function<void(double / * result * /)>`, this can be used from Swift.
-   */
-  class Func_void_double_Wrapper final {
-  public:
-    explicit Func_void_double_Wrapper(std::function<void(double /* result */)>&& func): _function(std::make_unique<std::function<void(double /* result */)>>(std::move(func))) {}
-    inline void call(double result) const noexcept {
-      _function->operator()(result);
-    }
-  private:
-    std::unique_ptr<std::function<void(double /* result */)>> _function;
-  } SWIFT_NONCOPYABLE;
-  Func_void_double create_Func_void_double(void* _Nonnull swiftClosureWrapper) noexcept;
-  inline Func_void_double_Wrapper wrap_Func_void_double(Func_void_double value) noexcept {
-    return Func_void_double_Wrapper(std::move(value));
   }
   
   // pragma MARK: std::optional<double>
