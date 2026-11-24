@@ -75,6 +75,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var currentAmbientFile: AVAudioFile?
     // Node D's target volume and ramps (DUS-2094) — see AmbientVolume.swift
     private let ambientVolume = AmbientVolumeController()
+    // Main track pause/resume micro-fades (DUS-3349) — see MainTrackFade.swift
+    private let mainTrackFade = MainTrackFadeController()
     private var currentLoopingFileURI: String?
 
     // Track which player is active (for future crossfading)
@@ -320,6 +322,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     override init() {
         super.init()
         ambientVolume.log = { [weak self] message in
+            self?.bridgedLog(message)
+        }
+        mainTrackFade.log = { [weak self] message in
             self?.bridgedLog(message)
         }
         setupAudioInterruptionHandling()
@@ -1589,6 +1594,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // self.vadStreamState = nil
 
         // Step 8: Reset playback state
+        self.mainTrackFade.cancel()
         self.currentPlayerNode = nil
         self.currentAudioFile = nil
         self.currentAmbientFile = nil
@@ -2733,6 +2739,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                     return
                 }
 
+                // DUS-3349: a pause fade still running must not pause or
+                // re-volume the new track.
+                self.mainTrackFade.cancel()
                 self.currentPlayerNode = playerNode
 
                 // Stop any current playback on this node
@@ -2956,6 +2965,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         self.bridgedLog("🛑 STOPPING Node \(self.getNodeName(for: self.currentPlayerNode)) (stopPlayer called)")
 
+        // DUS-3349: end any pause/resume fade before the nodes are reset.
+        self.mainTrackFade.cancel()
+
         // Cancel loop crossfade timer
         self.loopCrossfadeTimer?.cancel()
         self.loopCrossfadeTimer = nil
@@ -3023,7 +3035,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let promise = Promise<String>()
 
         if let playerNode = self.currentPlayerNode {
-            playerNode.pause()
+            // DUS-3349: fade out over 0.1 s before pausing, like the ambient
+            // loop below, so the pause doesn't click. During a loop crossfade
+            // two fades already own the node volumes: pause at once, as before.
+            if self.isLoopCrossfadeActive {
+                playerNode.pause()
+            } else {
+                self.mainTrackFade.pause(node: playerNode)
+            }
 
             // Also pause ambient loop if playing (uses dedicated Player D)
             // Use micro-fade to avoid audio click. The target volume is kept
@@ -3053,7 +3072,13 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         let promise = Promise<String>()
 
         if let playerNode = self.currentPlayerNode {
-            playerNode.play()
+            // DUS-3349: fade in over 0.1 s, like the ambient loop below, so
+            // the resume doesn't click.
+            if self.isLoopCrossfadeActive {
+                playerNode.play()
+            } else {
+                self.mainTrackFade.resume(node: playerNode)
+            }
 
             // Also resume ambient loop if it was playing (uses dedicated Player D)
             // Use micro-fade to avoid audio click
@@ -3148,10 +3173,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.cancelLoopFades()
             self.isLoopCrossfadeActive = false
 
+            // DUS-3349: end a pause/resume fade before reading the node. Its
+            // volume is mid-ramp, and a pause fade's node still reports
+            // isPlaying until the delayed pause lands. Taking it over here
+            // means no fade step or delayed pause can touch the node after
+            // this line.
+            let fade = self.mainTrackFade.takeOverForSeek(node: playerNode)
+
             // Guard: If no frames left to play, stop playback (non-looping
             // only — looping targets were clamped before the crossfade window)
             guard remainingFrames > 0 else {
                 self.stopAllPlayerNodes()
+                if let fade = fade {
+                    playerNode.volume = fade.volume
+                }
                 let seekTimeSeconds = Double(clampedFrame) / sampleRate
                 self.lastValidPosition = seekTimeSeconds * 1000.0
                 self.finishSeek(generation: generation)
@@ -3161,8 +3196,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // "Was playing" must consider ALL nodes: during a crossfade the
             // incoming node is the one playing, not currentPlayerNode.
-            let wasPlaying = self.anyPlayerNodePlaying()
-            let volume = wasCrossfading ? self.playbackVolume : playerNode.volume
+            // A pause fade in progress means the user paused: stay paused.
+            // A fade's target volume wins over the node's mid-ramp volume.
+            let wasPlaying = fade?.pausing == true ? false : self.anyPlayerNodePlaying()
+            let volume = wasCrossfading
+                ? self.playbackVolume
+                : (fade?.volume ?? playerNode.volume)
 
             // Stop EVERY playback node, not just the current one — a seek
             // during a loop crossfade otherwise leaves the incoming node
@@ -3293,6 +3332,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
         if let playerNode = self.currentPlayerNode {
             playerNode.volume = Float(volume)
+            // A pause/resume fade in flight ends at the new volume (DUS-3349).
+            self.mainTrackFade.retarget(Float(volume), node: playerNode)
             promise.resolve(withResult: "Volume set to \(volume)")
         } else if let engine = self.audioEngine {
             engine.mainMixerNode.outputVolume = Float(volume)
@@ -4229,6 +4270,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             audioPlayerNodeC = nil
             audioPlayerNodeD = nil
             ambientVolume.reset()
+            mainTrackFade.cancel()
             currentPlayerNode = nil
             audioEngineInitialized = false
             engineGeneration += 1
