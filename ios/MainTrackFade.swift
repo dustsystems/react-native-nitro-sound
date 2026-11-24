@@ -17,6 +17,12 @@ import AVFoundation
 /// - `cancel()` (stop, a new track, engine teardown) ends a fade without
 ///   touching the node again.
 ///
+/// Not coordinated with `fadeVolume` (crossfadeTo, fadeVolumeTo, the seamless
+/// loop crossfade): if one of those starts on the same node inside this
+/// fade's ~130 ms, both write `volume` until this fade ends. Reachable only
+/// at a phase or loop boundary; pause/resume during an active loop crossfade
+/// stays instant for that reason.
+///
 /// Threading: state lives behind `lock`; callers may be on any thread. Every
 /// timer step runs on the main queue and writes the node while holding
 /// `lock`, so a `cancel()` that returns guarantees no later write.
