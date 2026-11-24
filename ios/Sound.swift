@@ -3173,10 +3173,20 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.cancelLoopFades()
             self.isLoopCrossfadeActive = false
 
+            // DUS-3349: end a pause/resume fade before reading the node. Its
+            // volume is mid-ramp, and a pause fade's node still reports
+            // isPlaying until the delayed pause lands. Taking it over here
+            // means no fade step or delayed pause can touch the node after
+            // this line.
+            let fade = self.mainTrackFade.takeOverForSeek(node: playerNode)
+
             // Guard: If no frames left to play, stop playback (non-looping
             // only — looping targets were clamped before the crossfade window)
             guard remainingFrames > 0 else {
                 self.stopAllPlayerNodes()
+                if let fade = fade {
+                    playerNode.volume = fade.volume
+                }
                 let seekTimeSeconds = Double(clampedFrame) / sampleRate
                 self.lastValidPosition = seekTimeSeconds * 1000.0
                 self.finishSeek(generation: generation)
@@ -3186,8 +3196,12 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // "Was playing" must consider ALL nodes: during a crossfade the
             // incoming node is the one playing, not currentPlayerNode.
-            let wasPlaying = self.anyPlayerNodePlaying()
-            let volume = wasCrossfading ? self.playbackVolume : playerNode.volume
+            // A pause fade in progress means the user paused: stay paused.
+            // A fade's target volume wins over the node's mid-ramp volume.
+            let wasPlaying = fade?.pausing == true ? false : self.anyPlayerNodePlaying()
+            let volume = wasCrossfading
+                ? self.playbackVolume
+                : (fade?.volume ?? playerNode.volume)
 
             // Stop EVERY playback node, not just the current one — a seek
             // during a loop crossfade otherwise leaves the incoming node

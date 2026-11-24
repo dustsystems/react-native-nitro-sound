@@ -16,6 +16,9 @@ import AVFoundation
 ///   from wherever the volume is, toward the same remembered volume.
 /// - `cancel()` (stop, a new track, engine teardown) ends a fade without
 ///   touching the node again.
+/// - A seek calls `takeOverForSeek(node:)` before it reads the node: the fade
+///   ends, and the seek gets the fade's target volume and whether a pause was
+///   under way (then the track counts as paused and the seek must not play).
 ///
 /// Not coordinated with `fadeVolume` (crossfadeTo, fadeVolumeTo, the seamless
 /// loop crossfade): if one of those starts on the same node inside this
@@ -40,6 +43,9 @@ final class MainTrackFadeController {
     /// The node a fade is running on, and the volume it returns to.
     private weak var fadingNode: AVAudioPlayerNode?
     private var restoreVolume: Float = 1
+    /// True while the running fade is a pause (fade out, then the settle
+    /// timer); false for a resume ramp.
+    private var fadingOut = false
     /// Set once by HybridSound.init, before any other call.
     var log: (String) -> Void = { _ in }
 
@@ -83,6 +89,23 @@ final class MainTrackFadeController {
         restoreVolume = volume
     }
 
+    /// A seek is about to stop and reschedule `node`: end any fade on it and
+    /// hand over what the fade was heading to. Returns nil when no fade runs
+    /// on this node; the seek then reads the node's state as before.
+    /// - volume: the volume the fade would have ended at (the node's own
+    ///   volume is mid-ramp and must not be restored).
+    /// - pausing: a pause fade was running. The user asked to pause, so the
+    ///   seek leaves the track paused even though the node is still playing.
+    func takeOverForSeek(node: AVAudioPlayerNode) -> (volume: Float, pausing: Bool)? {
+        lock.lock()
+        defer { lock.unlock() }
+        guard let volume = restoreTargetLocked(for: node) else { return nil }
+        let pausing = fadingOut
+        supersedeLocked()
+        log("🔍 MAIN \(pausing ? "pause" : "resume") fade ended by seek (volume \(volume))")
+        return (volume, pausing)
+    }
+
     /// Stop, a new track or engine teardown: end any fade without touching
     /// the node again.
     func cancel() {
@@ -102,6 +125,7 @@ final class MainTrackFadeController {
         let gen = generation
         fadingNode = node
         restoreVolume = target
+        self.fadingOut = fadingOut
         let from = node.volume
         let timer = DispatchSource.makeTimerSource(queue: .main)
         self.timer = timer
@@ -133,7 +157,7 @@ final class MainTrackFadeController {
             step += 1
             let progress = Float(min(step, steps)) / Float(steps)
             if fadingOut {
-                node.volume = from * (1 - progress).squareRoot()
+                node.volume = from * Self.fadeOutGain(progress)
                 if step >= steps {
                     timer.cancel()
                     self.timer = nil
@@ -141,7 +165,7 @@ final class MainTrackFadeController {
                 }
             } else {
                 let goal = self.restoreVolume
-                node.volume = from + (goal - from) * progress.squareRoot()
+                node.volume = from + (goal - from) * Self.fadeInGain(progress)
                 if step >= steps {
                     node.volume = goal
                     self.endLocked()
@@ -183,6 +207,18 @@ final class MainTrackFadeController {
         generation &+= 1
         timer?.cancel()
         endLocked()
+    }
+
+    /// Quarter-sine gain curves. Like the square root they replace, they are
+    /// equal-power (fade-in² + fade-out² = 1) so loudness falls evenly, but
+    /// their slope is gentle at silence: the step to or from 0 is ~2.6% of the
+    /// volume instead of ~13%, which was the loudest step left in the fade.
+    private static func fadeInGain(_ progress: Float) -> Float {
+        sin(progress * .pi / 2)
+    }
+
+    private static func fadeOutGain(_ progress: Float) -> Float {
+        cos(progress * .pi / 2)
     }
 
     private static var stepInterval: DispatchTimeInterval {
