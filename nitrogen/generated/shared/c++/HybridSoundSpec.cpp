@@ -19,6 +19,7 @@ namespace margelo::nitro::sound {
       prototype.registerHybridMethod("endEngineSession", &HybridSoundSpec::endEngineSession);
       prototype.registerHybridMethod("setSessionMode", &HybridSoundSpec::setSessionMode);
       prototype.registerHybridMethod("setAlarmSpeakerOnly", &HybridSoundSpec::setAlarmSpeakerOnly);
+      prototype.registerHybridMethod("setAlarmTakesOverAudio", &HybridSoundSpec::setAlarmTakesOverAudio);
       prototype.registerHybridMethod("beginRecording", &HybridSoundSpec::beginRecording);
       prototype.registerHybridMethod("endRecording", &HybridSoundSpec::endRecording);
       prototype.registerHybridMethod("isSegmentRecording", &HybridSoundSpec::isSegmentRecording);
