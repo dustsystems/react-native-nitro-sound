@@ -32,9 +32,11 @@ final class SpeechClassifierTracker {
 
     /// A window counts as speech when any speech label reaches this
     /// confidence. The labels are scored independently (not a softmax), so
-    /// 0.5 means "more likely than not". The offline harness (DUS-3437 PR) found
-    /// normal and -20 dB speech, alone and over rumble, well above it, and
-    /// rumble, fan, a cough and silence well below it.
+    /// 0.5 means "more likely than not". The offline harness (DUS-3437 PR), on
+    /// synthesized inputs (say speech, sox rumble, fan noise and a noise burst),
+    /// found normal to -30 dB speech, alone and over the rumble, well above it,
+    /// and the rumble, fan, burst and silence below 0.05. Real airplanes and
+    /// coughs still need the phone test.
     static let confidenceThreshold: Double = 0.5
 
     /// One second of audio per decision: long enough for the classifier to
@@ -42,8 +44,9 @@ final class SpeechClassifierTracker {
     /// short enough that the last speech is placed within about a second.
     static let windowSeconds: Double = 1.0
     /// Half-overlapping windows give a decision every 0.5 s, matching JS's
-    /// 500 ms poll, so talking moves the speech mark on every poll and JS's
-    /// 200 ms run check (SPEECH_MIN_RUN_MS) passes on the second one.
+    /// 500 ms poll, so talking moves the speech mark on every poll. One short
+    /// sound can land in two windows; JS's run check (SPEECH_MIN_RUN_MS,
+    /// 900 ms) needs three marked windows in a row.
     static let overlapFactor: Double = 0.5
 
     /// About 6 s of 100 ms chunks waiting for the classifier. Beyond that it
@@ -134,6 +137,8 @@ final class SpeechClassifierTracker {
             return
         }
         guard active else { return }
+        // The worker allocates a fresh buffer per chunk today; the copy (a few
+        // KB) keeps the classifier safe if it ever reuses one.
         guard let copy = Self.copy(buffer) else {
             lock.lock()
             pendingChunks -= 1
