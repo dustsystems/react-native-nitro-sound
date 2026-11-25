@@ -96,8 +96,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var fixedDurationTimer: DispatchSourceTimer?
     private var recordingStartTime: Date?
     private var maxRecordingDuration: Double = 90.0  // Default 90 seconds
-    /// Silence reading for the app (DUS-2556); see SpeechLevelTracker.swift.
-    private let speechLevel = SpeechLevelTracker()
+    /// Silence reading for the app (DUS-2556): speech, not loudness, since
+    /// DUS-3437; see SpeechClassifierTracker.swift.
+    private let speechClassifier = SpeechClassifierTracker()
 
     // Crossfade state management
     private var crossfadeTimer: Timer?
@@ -327,6 +328,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self?.bridgedLog(message)
         }
         mainTrackFade.log = { [weak self] message in
+            self?.bridgedLog(message)
+        }
+        speechClassifier.log = { [weak self] message in
             self?.bridgedLog(message)
         }
         setupAudioInterruptionHandling()
@@ -1418,6 +1422,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                         // a fresh pipeline.
                     } else {
                         engine.inputNode.removeTap(onBus: 0)
+                        self.speechClassifier.stop()  // DUS-3437: no tap, no speech to classify
                         self.isInputTapInstalled = false
                         self.tapOwnedByRecorder = false
                         self.stopTapMonitor()
@@ -1536,6 +1541,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 // engine.inputNode would create one (DUS-1956).
                 if self.sessionMode == .playAndRecord {
                     engine.inputNode.removeTap(onBus: 0)
+                    self.speechClassifier.stop()  // DUS-3437: no tap, no speech to classify
                 }
                 self.isInputTapInstalled = false
                 self.tapOwnedByRecorder = false
@@ -1590,6 +1596,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.processingTimer = nil
             self.currentSegmentFile = nil
             self.processingQueue.sync { self.isRecordingSession = false }
+            self.speechClassifier.stop()  // DUS-3437: release the classifier with the recording
         }
         // DISABLED: VAD cleanup
         // self.vadManager = nil
@@ -2041,6 +2048,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // Stop the recording session
         guard self.isRecordingSession else { return }
         processingQueue.sync { self.isRecordingSession = false }
+        speechClassifier.stop()  // DUS-3437: release the classifier with the recording
 
         // Drain remaining samples synchronously
         processingQueue.sync { [weak self] in
@@ -2075,10 +2083,15 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     }
 
     /// Milliseconds since the current recording last heard speech; -1 when no
-    /// recording is active (DUS-2556).
+    /// recording is active or the speech classifier failed (DUS-2556). The
+    /// first call of a recording starts the classifier (DUS-3437), so a
+    /// recording nobody watches never runs it.
     public func getRecordingSilenceMs() throws -> Promise<Double> {
         let promise = Promise<Double>()
-        if self.isRecordingSession, let ms = speechLevel.silenceMs() {
+        if self.isRecordingSession {
+            speechClassifier.activate()
+        }
+        if self.isRecordingSession, let ms = speechClassifier.silenceMs() {
             promise.resolve(withResult: ms)
         } else {
             promise.resolve(withResult: -1)
@@ -2117,7 +2130,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             let segmentFile = try AVAudioFile(forWriting: fileURL, settings: pipeline.targetFormat.settings)
             segmentStartTime = Date()
             // Before the flag, so the worker never measures against a stale start.
-            speechLevel.reset(at: segmentStartTime ?? Date())
+            speechClassifier.reset(at: segmentStartTime ?? Date())
             // Published on processingQueue, so a worker that is already running
             // for command recognition sees the file before the flag (DUS-3305).
             processingQueue.sync {
@@ -2164,6 +2177,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         guard isRecordingSession else { return }
 
         processingQueue.sync { isRecordingSession = false }
+        speechClassifier.stop()  // DUS-3437: release the classifier with the recording
 
         // Drain remaining samples synchronously
         processingQueue.sync { [weak self] in
@@ -2224,9 +2238,10 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // let audioIsLoud = runVADOnWorker(samples16k)
             // handleSilenceDetectionOnWorker(audioIsLoud: audioIsLoud)
 
-            // Silence reading for the app (DUS-2556): level only, never stops anything.
+            // Silence reading for the app (DUS-2556/DUS-3437): copies the chunk
+            // to the classifier's own queue, never waits, never stops anything.
             if isRecordingSession {
-                speechLevel.track(samples16k)
+                speechClassifier.track(samples16k)
             }
 
             // 2. Write to file (recording sink)
@@ -4983,6 +4998,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         // playback session, DUS-1956)
         if let engine = audioEngine, sessionMode == .playAndRecord {
             engine.inputNode.removeTap(onBus: 0)
+            speechClassifier.stop()
             stopTapMonitor()
             // Don't stop the engine here as it might be used by other instances
         }
