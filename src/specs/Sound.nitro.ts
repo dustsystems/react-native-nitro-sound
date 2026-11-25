@@ -121,7 +121,8 @@ export interface Sound
    * category options change: never the mode, the preferred input, the buffer
    * duration or a deactivation. With no engine, enabling refuses and disabling
    * only clears the flag (the shared session may belong to expo-audio by then).
-   * Reset by endEngineSession and setSessionMode. Never rejects. Resolves JSON
+   * endEngineSession (and the sleep-capture release) set today's options back
+   * before they deactivate; setSessionMode clears it. Never rejects. Resolves JSON
    * `{ outcome, category, mixWithOthers, otherAudioBefore, otherAudioAfter,
    * notes? }`, `outcome` one of `took_over` (not mixable, session active),
    * `released` (enabled: false, mixable again), `refused` (iOS refused the

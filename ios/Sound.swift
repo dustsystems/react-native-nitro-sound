@@ -511,6 +511,23 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         alarmTakesOverAudio ? [] : [.mixWithOthers]
     }
 
+    /// DUS-2998: the teardown paths call this just before they deactivate. The
+    /// options outlive the session's activation, so without it the next user of
+    /// the shared session (dictation joining the existing category) would start
+    /// non-mixable and interrupt other apps' audio. Category options only, and
+    /// only while the takeover is on; the deactivation that follows (with
+    /// notifyOthersOnDeactivation) lets the interrupted app resume.
+    private func handBackAlarmTakeover(_ audioSession: AVAudioSession) {
+        guard alarmTakesOverAudio else { return }
+        alarmTakesOverAudio = false
+        do {
+            try setCategoryForSessionMode(audioSession)
+            bridgedLog("🔊 ALARM TAKEOVER handed back at teardown: mixWithOthers=\(audioSession.categoryOptions.contains(.mixWithOthers))")
+        } catch {
+            bridgedLog("⚠️ ALARM TAKEOVER: restoring today's options at teardown failed: \(error.localizedDescription)")
+        }
+    }
+
     /// The category of the current session mode with its current options, and
     /// nothing else (DUS-2998): no mode change, no input pin, no buffer duration.
     private func setCategoryForSessionMode(_ audioSession: AVAudioSession) throws {
@@ -1594,6 +1611,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // Step 5: Deactivate audio session (critical for removing mic indicator)
             let audioSession = AVAudioSession.sharedInstance()
+            self.handBackAlarmTakeover(audioSession)
             do {
                 try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
             } catch {
@@ -4446,6 +4464,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 engine.stop()
                 bridgedLog("🔴 AUDIO ENGINE STOPPED (sleep-capture release)")
             }
+            handBackAlarmTakeover(AVAudioSession.sharedInstance())
             do {
                 try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             } catch {
