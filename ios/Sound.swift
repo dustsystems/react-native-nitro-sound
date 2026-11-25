@@ -64,9 +64,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// While true, the session options omit .mixWithOthers (playAndRecordOptions
     /// and playbackOptions), so activating the session interrupts other apps'
     /// audio while the morning wake flow runs. JS flips it through
-    /// setAlarmTakesOverAudio. Same locking and resets as alarmSpeakerOnly:
-    /// read and written under engineInitLock, reset by both teardown paths and
-    /// by setSessionMode, so it can never outlive the night that set it.
+    /// setAlarmTakesOverAudio. Same resets as alarmSpeakerOnly: written by
+    /// setAlarmTakesOverAudio (under engineInitLock, its activation on
+    /// engineControlQueue), handed back on engineControlQueue by both teardown
+    /// paths and by an interruption, and cleared by setSessionMode, so it can
+    /// never outlive the night that set it.
     private var alarmTakesOverAudio = false
 
     // Dual player nodes for crossfading support
@@ -511,7 +513,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         alarmTakesOverAudio ? [] : [.mixWithOthers]
     }
 
-    /// DUS-2998: the teardown paths call this just before they deactivate. The
+    /// DUS-2998: the teardown paths call this just before they deactivate, and
+    /// an interruption calls it when it begins. The
     /// options outlive the session's activation, so without it the next user of
     /// the shared session (dictation joining the existing category) would start
     /// non-mixable and interrupt other apps' audio. Category options only, and
@@ -522,9 +525,9 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         alarmTakesOverAudio = false
         do {
             try setCategoryForSessionMode(audioSession)
-            bridgedLog("🔊 ALARM TAKEOVER handed back at teardown: mixWithOthers=\(audioSession.categoryOptions.contains(.mixWithOthers))")
+            bridgedLog("🔊 ALARM TAKEOVER handed back (teardown or interruption): mixWithOthers=\(audioSession.categoryOptions.contains(.mixWithOthers))")
         } catch {
-            bridgedLog("⚠️ ALARM TAKEOVER: restoring today's options at teardown failed: \(error.localizedDescription)")
+            bridgedLog("⚠️ ALARM TAKEOVER: restoring today's options failed: \(error.localizedDescription)")
         }
     }
 
@@ -1023,6 +1026,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Night outcome evidence: JS records this as the `audio_interrupted` trail step, so
             // a ring that another session cut off at the alarm minute is classified, not guessed.
             emitEngineEvent("audioInterruptionBegan", "reason=\(reasonCode);at_ms=\(nowMs)")
+            // DUS-2998 (review finding): something else now holds the speaker. Mix
+            // again before anything re-activates the session, so the recovery
+            // (and a background restart) asks for today's mixable session, which
+            // iOS allows, and is not refused as a non-mixable one. The next ring
+            // takes over again. Same queue as the teardown resets.
+            engineControlQueue.async { [weak self] in
+                self?.handBackAlarmTakeover(AVAudioSession.sharedInstance())
+            }
 
         } else if type == .ended {
             let shouldResume = (userInfo[AVAudioSessionInterruptionOptionKey] as? UInt) == AVAudioSession.InterruptionOptions.shouldResume.rawValue
@@ -2039,11 +2050,29 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 return
             }
 
-            self.alarmTakesOverAudio = true
-            do {
-                try self.setCategoryForSessionMode(session)
-                try session.setActive(true)
-            } catch {
+            // On engineControlQueue, so a teardown cannot deactivate the session
+            // between the engine check above and the activation below (review
+            // finding): endEngineSession does not take engineInitLock.
+            var takeoverError: Error?
+            var tornDown = false
+            self.engineControlQueue.sync {
+                if self.teardownInFlight || !self.audioEngineInitialized {
+                    tornDown = true
+                    return
+                }
+                self.alarmTakesOverAudio = true
+                do {
+                    try self.setCategoryForSessionMode(session)
+                    try session.setActive(true)
+                } catch {
+                    takeoverError = error
+                }
+            }
+            if tornDown {
+                finish("no_engine")
+                return
+            }
+            if let error = takeoverError {
                 notes.append(self.alarmRouteNote("takeover_refused", error))
                 self.alarmTakesOverAudio = false
                 do {

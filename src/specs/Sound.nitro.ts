@@ -119,10 +119,12 @@ export interface Sound
    * audio (music, podcasts) while the wake flow runs. Disabling sets today's
    * options (with mixWithOthers) back. Composes with setAlarmSpeakerOnly. Only
    * category options change: never the mode, the preferred input, the buffer
-   * duration or a deactivation. With no engine, enabling refuses and disabling
-   * only clears the flag (the shared session may belong to expo-audio by then).
+   * duration or a deactivation. With no engine (or one being torn down), both
+   * answer no_engine and touch nothing (the session may be expo-audio's by then).
    * endEngineSession (and the sleep-capture release) set today's options back
-   * before they deactivate; setSessionMode clears it. Never rejects. Resolves JSON
+   * before they deactivate, and so does an audio interruption (so the recovery
+   * re-activates a mixable session); setSessionMode clears it. Never rejects.
+   * Resolves JSON
    * `{ outcome, category, mixWithOthers, otherAudioBefore, otherAudioAfter,
    * notes? }`, `outcome` one of `took_over` (not mixable, session active),
    * `released` (enabled: false, mixable again), `refused` (iOS refused the
