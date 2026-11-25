@@ -62,6 +62,7 @@ namespace margelo::nitro::sound {
     std::shared_ptr<Promise<void>> beginRecording(double maxDurationSeconds) override;
     std::shared_ptr<Promise<void>> endRecording() override;
     std::shared_ptr<Promise<bool>> isSegmentRecording() override;
+    std::shared_ptr<Promise<double>> getRecordingSilenceMs() override;
     std::shared_ptr<Promise<std::string>> startPlayer(const std::optional<std::string>& uri, const std::optional<std::unordered_map<std::string, std::string>>& httpHeaders) override;
     std::shared_ptr<Promise<std::string>> stopPlayer() override;
     std::shared_ptr<Promise<std::string>> pausePlayer() override;

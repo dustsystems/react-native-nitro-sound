@@ -135,6 +135,14 @@ export interface Sound
    */
   isSegmentRecording(): Promise<boolean>;
 
+  /**
+   * Milliseconds since the current recording last heard someone speak (a
+   * level above the room's own noise), counted from the recording's start
+   * until the first speech. -1 when no recording is active.
+   * The app uses it to end a dream recording after a long silence (DUS-2556).
+   */
+  getRecordingSilenceMs(): Promise<number>;
+
   // Playback methods
   startPlayer(
     uri?: string,

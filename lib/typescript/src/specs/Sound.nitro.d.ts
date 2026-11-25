@@ -118,6 +118,13 @@ export interface Sound extends HybridObject<{
      * @returns true if actively recording, false otherwise
      */
     isSegmentRecording(): Promise<boolean>;
+    /**
+     * Milliseconds since the current recording last heard someone speak (a
+     * level above the room's own noise), counted from the recording's start
+     * until the first speech. -1 when no recording is active.
+     * The app uses it to end a dream recording after a long silence (DUS-2556).
+     */
+    getRecordingSilenceMs(): Promise<number>;
     startPlayer(uri?: string, httpHeaders?: Record<string, string>): Promise<string>;
     stopPlayer(): Promise<string>;
     pausePlayer(): Promise<string>;

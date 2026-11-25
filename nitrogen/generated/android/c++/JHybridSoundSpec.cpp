@@ -192,6 +192,22 @@ namespace margelo::nitro::sound {
       return __promise;
     }();
   }
+  std::shared_ptr<Promise<double>> JHybridSoundSpec::getRecordingSilenceMs() {
+    static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>()>("getRecordingSilenceMs");
+    auto __result = method(_javaPart);
+    return [&]() {
+      auto __promise = Promise<double>::create();
+      __result->cthis()->addOnResolvedListener([=](const jni::alias_ref<jni::JObject>& __boxedResult) {
+        auto __result = jni::static_ref_cast<jni::JDouble>(__boxedResult);
+        __promise->resolve(__result->value());
+      });
+      __result->cthis()->addOnRejectedListener([=](const jni::alias_ref<jni::JThrowable>& __throwable) {
+        jni::JniException __jniError(__throwable);
+        __promise->reject(std::make_exception_ptr(__jniError));
+      });
+      return __promise;
+    }();
+  }
   std::shared_ptr<Promise<std::string>> JHybridSoundSpec::startPlayer(const std::optional<std::string>& uri, const std::optional<std::unordered_map<std::string, std::string>>& httpHeaders) {
     static const auto method = _javaPart->javaClassStatic()->getMethod<jni::local_ref<JPromise::javaobject>(jni::alias_ref<jni::JString> /* uri */, jni::alias_ref<jni::JMap<jni::JString, jni::JString>> /* httpHeaders */)>("startPlayer");
     auto __result = method(_javaPart, uri.has_value() ? jni::make_jstring(uri.value()) : nullptr, httpHeaders.has_value() ? [&]() -> jni::local_ref<jni::JMap<jni::JString, jni::JString>> {

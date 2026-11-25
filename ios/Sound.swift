@@ -96,6 +96,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     private var fixedDurationTimer: DispatchSourceTimer?
     private var recordingStartTime: Date?
     private var maxRecordingDuration: Double = 90.0  // Default 90 seconds
+    /// Silence reading for the app (DUS-2556); see SpeechLevelTracker.swift.
+    private let speechLevel = SpeechLevelTracker()
 
     // Crossfade state management
     private var crossfadeTimer: Timer?
@@ -2072,6 +2074,18 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         return promise
     }
 
+    /// Milliseconds since the current recording last heard speech; -1 when no
+    /// recording is active (DUS-2556).
+    public func getRecordingSilenceMs() throws -> Promise<Double> {
+        let promise = Promise<Double>()
+        if self.isRecordingSession, let ms = speechLevel.silenceMs() {
+            promise.resolve(withResult: ms)
+        } else {
+            promise.resolve(withResult: -1)
+        }
+        return promise
+    }
+
     // MARK: - Worker Queue (RT-Safe Audio Processing)
 
     /// Start the recording session - activates worker to drain SPSC buffer and write to file
@@ -2102,6 +2116,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         do {
             let segmentFile = try AVAudioFile(forWriting: fileURL, settings: pipeline.targetFormat.settings)
             segmentStartTime = Date()
+            // Before the flag, so the worker never measures against a stale start.
+            speechLevel.reset(at: segmentStartTime ?? Date())
             // Published on processingQueue, so a worker that is already running
             // for command recognition sees the file before the flag (DUS-3305).
             processingQueue.sync {
@@ -2207,6 +2223,11 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // DISABLED: VAD/silence detection
             // let audioIsLoud = runVADOnWorker(samples16k)
             // handleSilenceDetectionOnWorker(audioIsLoud: audioIsLoud)
+
+            // Silence reading for the app (DUS-2556): level only, never stops anything.
+            if isRecordingSession {
+                speechLevel.track(samples16k)
+            }
 
             // 2. Write to file (recording sink)
             if isRecordingSession, let segmentFile = currentSegmentFile {
