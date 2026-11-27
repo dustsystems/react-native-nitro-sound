@@ -60,6 +60,17 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// .playback session.
     private var alarmSpeakerOnly = false
 
+    // MARK: - Alarm takes over audio (DUS-2998)
+    /// While true, the session options omit .mixWithOthers (playAndRecordOptions
+    /// and playbackOptions), so activating the session interrupts other apps'
+    /// audio while the morning wake flow runs. JS flips it through
+    /// setAlarmTakesOverAudio. Same resets as alarmSpeakerOnly: written by
+    /// setAlarmTakesOverAudio (under engineInitLock, its activation on
+    /// engineControlQueue), handed back on engineControlQueue by both teardown
+    /// paths and by an interruption, and cleared by setSessionMode, so it can
+    /// never outlive the night that set it.
+    private var alarmTakesOverAudio = false
+
     // Dual player nodes for crossfading support
     private var audioPlayerNodeA: AVAudioPlayerNode?
     private var audioPlayerNodeB: AVAudioPlayerNode?
@@ -485,11 +496,49 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// the option removes paired A2DP devices from the available outputs).
     /// .defaultToSpeaker stays in every case, or output falls to the earpiece.
     private func playAndRecordOptions() -> AVAudioSession.CategoryOptions {
-        var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker, .mixWithOthers]
+        var options: AVAudioSession.CategoryOptions = [.defaultToSpeaker]
+        // DUS-2998: the one place .mixWithOthers leaves the play-and-record options.
+        if !alarmTakesOverAudio {
+            options.insert(.mixWithOthers)
+        }
         if !alarmSpeakerOnly {
             options.insert(.allowBluetoothA2DP)
         }
         return options
+    }
+
+    /// The .playback options (DUS-1956): today's .mixWithOthers, dropped only
+    /// while the alarm takes over audio (DUS-2998).
+    private func playbackOptions() -> AVAudioSession.CategoryOptions {
+        alarmTakesOverAudio ? [] : [.mixWithOthers]
+    }
+
+    /// DUS-2998: the teardown paths call this just before they deactivate, and
+    /// an interruption calls it when it begins. The
+    /// options outlive the session's activation, so without it the next user of
+    /// the shared session (dictation joining the existing category) would start
+    /// non-mixable and interrupt other apps' audio. Category options only, and
+    /// only while the takeover is on; the deactivation that follows (with
+    /// notifyOthersOnDeactivation) lets the interrupted app resume.
+    private func handBackAlarmTakeover(_ audioSession: AVAudioSession) {
+        guard alarmTakesOverAudio else { return }
+        alarmTakesOverAudio = false
+        do {
+            try setCategoryForSessionMode(audioSession)
+            bridgedLog("🔊 ALARM TAKEOVER handed back (teardown or interruption): mixWithOthers=\(audioSession.categoryOptions.contains(.mixWithOthers))")
+        } catch {
+            bridgedLog("⚠️ ALARM TAKEOVER: restoring today's options failed: \(error.localizedDescription)")
+        }
+    }
+
+    /// The category of the current session mode with its current options, and
+    /// nothing else (DUS-2998): no mode change, no input pin, no buffer duration.
+    private func setCategoryForSessionMode(_ audioSession: AVAudioSession) throws {
+        if sessionMode == .playback {
+            try audioSession.setCategory(.playback, mode: .default, options: playbackOptions())
+        } else {
+            try setPlayAndRecordCategory(audioSession)
+        }
     }
 
     /// Sets the .playAndRecord category with playAndRecordOptions and nothing
@@ -505,7 +554,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
     /// an error with any other category). No preferred input channels and no
     /// built-in-mic pin: both are input settings.
     private func configurePlaybackSession(_ audioSession: AVAudioSession) throws {
-        try audioSession.setCategory(.playback, mode: .default, options: [.mixWithOthers])
+        try audioSession.setCategory(.playback, mode: .default, options: playbackOptions())
         try audioSession.setPreferredIOBufferDuration(0.0232)
         bridgedLog("🔈 Playback session: no input, input not pinned")
     }
@@ -977,6 +1026,14 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // Night outcome evidence: JS records this as the `audio_interrupted` trail step, so
             // a ring that another session cut off at the alarm minute is classified, not guessed.
             emitEngineEvent("audioInterruptionBegan", "reason=\(reasonCode);at_ms=\(nowMs)")
+            // DUS-2998 (review finding): something else now holds the speaker. Mix
+            // again before anything re-activates the session, so the recovery
+            // (and a background restart) asks for today's mixable session, which
+            // iOS allows, and is not refused as a non-mixable one. The next ring
+            // takes over again. Same queue as the teardown resets.
+            engineControlQueue.async { [weak self] in
+                self?.handBackAlarmTakeover(AVAudioSession.sharedInstance())
+            }
 
         } else if type == .ended {
             let shouldResume = (userInfo[AVAudioSessionInterruptionOptionKey] as? UInt) == AVAudioSession.InterruptionOptions.shouldResume.rawValue
@@ -1352,7 +1409,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
         bridgedLog("│   engine     init=\(engineInit)   running=\(engineRun)")
         bridgedLog("│   recording  segment=\(hasSegment)   buffer=\(bufferCount) chunks")
         bridgedLog("│   playback   loop=\(shouldLoopPlayback)   ambient=\(isAmbientLoopPlaying)")
-        bridgedLog("│   session    \(category) @ \(sampleRate) Hz   mode=\(sessionMode.rawValue) speakerOnly=\(alarmSpeakerOnly)")
+        bridgedLog("│   session    \(category) @ \(sampleRate) Hz   mode=\(sessionMode.rawValue) speakerOnly=\(alarmSpeakerOnly) takeover=\(alarmTakesOverAudio)")
         bridgedLog("│   route out  \(route.isEmpty ? "—" : route)")
         bridgedLog("│   route in   \(inputRoute.isEmpty ? "—" : inputRoute)")
 
@@ -1565,6 +1622,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
 
             // Step 5: Deactivate audio session (critical for removing mic indicator)
             let audioSession = AVAudioSession.sharedInstance()
+            self.handBackAlarmTakeover(audioSession)
             do {
                 try audioSession.setActive(false, options: .notifyOthersOnDeactivation)
             } catch {
@@ -1585,6 +1643,8 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.sessionMode = .playAndRecord
             // DUS-2238: the next engine rings on today's route unless JS asks again.
             self.alarmSpeakerOnly = false
+            // DUS-2998: and mixes with other apps again.
+            self.alarmTakesOverAudio = false
             self.teardownInFlight = false
         }
 
@@ -1654,6 +1714,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // the next night. A live engine keeps its configured session until
             // the next reconfigure; JS never sets the mode mid-ring.
             self.alarmSpeakerOnly = false
+            self.alarmTakesOverAudio = false  // DUS-2998, same reason
 
             let previous = self.sessionMode
             if previous == requested {
@@ -1903,6 +1964,128 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             self.bridgedLog("❌ ALARM SPEAKER failed: \(reason) (\(restoreState)) before=\(before) after=\(after) notes=\(notes)")
             promise.resolve(withResult: self.alarmRouteJSON(
                 outcome: "failed", before: before, after: after, error: reason, notes: notes))
+        }
+
+        return promise
+    }
+
+    /// Lets the morning alarm take over audio from other apps, or hands it
+    /// back (DUS-2998). Same shape as setAlarmSpeakerOnly: runs on
+    /// DispatchQueue.global under engineInitLock, never rejects.
+    ///
+    /// Enabling: the current category without .mixWithOthers, then
+    /// setActive(true), which is what makes iOS interrupt other apps' audio.
+    /// A refusal (for example '!int' in the background) restores today's
+    /// options, so the alarm still rings as it does today. Disabling: today's
+    /// options back, no deactivation (the engine keeps running; the
+    /// endEngineSession deactivation with notifyOthersOnDeactivation is what
+    /// lets the other app resume later). Only category options change, as in
+    /// setAlarmSpeakerOnly: re-applying the buffer duration mid-alarm threw.
+    public func setAlarmTakesOverAudio(enabled: Bool) throws -> Promise<String> {
+        let promise = Promise<String>()
+
+        DispatchQueue.global(qos: .userInitiated).async { [weak self] in
+            guard let self = self else {
+                promise.resolve(withResult: "{\"outcome\":\"refused\",\"notes\":\"self_nil\"}")
+                return
+            }
+            let session = AVAudioSession.sharedInstance()
+            let otherAudioBefore = session.isOtherAudioPlaying
+
+            self.engineInitLock.lock()
+            defer { self.engineInitLock.unlock() }
+
+            var notes: [String] = []
+            func finish(_ outcome: String) {
+                let mixing = session.categoryOptions.contains(.mixWithOthers)
+                let otherAudioAfter = session.isOtherAudioPlaying
+                self.bridgedLog("🔊 ALARM TAKEOVER \(outcome): category=\(session.category.rawValue) mixWithOthers=\(mixing) otherAudio \(otherAudioBefore)->\(otherAudioAfter) notes=\(notes)")
+                var payload: [String: Any] = [
+                    "outcome": outcome,
+                    "category": session.category.rawValue,
+                    "mixWithOthers": mixing,
+                    "otherAudioBefore": otherAudioBefore,
+                    "otherAudioAfter": otherAudioAfter,
+                ]
+                if !notes.isEmpty { payload["notes"] = notes.joined(separator: ",") }
+                if let data = try? JSONSerialization.data(withJSONObject: payload),
+                   let json = String(data: data, encoding: .utf8) {
+                    promise.resolve(withResult: json)
+                } else {
+                    promise.resolve(withResult: "{\"outcome\":\"\(outcome)\"}")
+                }
+            }
+
+            // No engine: the wake flow is over or never built one, and the
+            // shared session may belong to expo-audio now. Touch nothing.
+            guard self.audioEngineInitialized, self.audioEngine != nil else {
+                self.alarmTakesOverAudio = false
+                finish("no_engine")
+                return
+            }
+
+            // A category change can stop the engine after the call returns, as
+            // in setAlarmSpeakerOnly: drain the queued recovery, then make sure
+            // it runs. engineControlQueue.sync is safe under engineInitLock (the
+            // recovery never takes it) and this closure is not on that queue.
+            func keepEngineRunning() {
+                self.engineControlQueue.sync {}
+                do {
+                    try self.ensureEngineRunning()
+                } catch {
+                    self.bridgedLog("⚠️ ALARM TAKEOVER: ensureEngineRunning failed: \(error.localizedDescription)")
+                    notes.append("engine_restart_failed")
+                }
+            }
+
+            if !enabled {
+                self.alarmTakesOverAudio = false
+                do {
+                    try self.setCategoryForSessionMode(session)
+                } catch {
+                    notes.append(self.alarmRouteNote("release_category_refused", error))
+                }
+                keepEngineRunning()
+                finish("released")
+                return
+            }
+
+            // On engineControlQueue, so a teardown cannot deactivate the session
+            // between the engine check above and the activation below (review
+            // finding): endEngineSession does not take engineInitLock.
+            var takeoverError: Error?
+            var tornDown = false
+            self.engineControlQueue.sync {
+                if self.teardownInFlight || !self.audioEngineInitialized {
+                    tornDown = true
+                    return
+                }
+                self.alarmTakesOverAudio = true
+                do {
+                    try self.setCategoryForSessionMode(session)
+                    try session.setActive(true)
+                } catch {
+                    takeoverError = error
+                }
+            }
+            if tornDown {
+                finish("no_engine")
+                return
+            }
+            if let error = takeoverError {
+                notes.append(self.alarmRouteNote("takeover_refused", error))
+                self.alarmTakesOverAudio = false
+                do {
+                    try self.setCategoryForSessionMode(session)
+                } catch {
+                    notes.append(self.alarmRouteNote("fallback_category_refused", error))
+                }
+                keepEngineRunning()
+                finish("refused")
+                return
+            }
+            keepEngineRunning()
+            finish("took_over")
         }
 
         return promise
@@ -4310,6 +4493,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
                 engine.stop()
                 bridgedLog("🔴 AUDIO ENGINE STOPPED (sleep-capture release)")
             }
+            handBackAlarmTakeover(AVAudioSession.sharedInstance())
             do {
                 try AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
             } catch {
@@ -4331,6 +4515,7 @@ final class HybridSound: HybridSoundSpec_base, HybridSoundSpec_protocol, SNResul
             // DUS-1956: same reset as endEngineSession.
             sessionMode = .playAndRecord
             alarmSpeakerOnly = false
+            alarmTakesOverAudio = false
             teardownInFlight = false
             bridgedLog("😴🔚 [SC] engine released after sleep-capture disarm (no other consumers)")
         }

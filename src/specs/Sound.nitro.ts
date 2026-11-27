@@ -112,6 +112,26 @@ export interface Sound
    */
   setAlarmSpeakerOnly(enabled: boolean): Promise<string>;
 
+  /**
+   * Let the morning alarm take over audio from other apps (DUS-2998). Enabling
+   * sets the session's current category (play-and-record or playback) without
+   * the mixWithOthers option and re-activates it, so iOS interrupts other apps'
+   * audio (music, podcasts) while the wake flow runs. Disabling sets today's
+   * options (with mixWithOthers) back. Composes with setAlarmSpeakerOnly. Only
+   * category options change: never the mode, the preferred input, the buffer
+   * duration or a deactivation. With no engine (or one being torn down), both
+   * answer no_engine and touch nothing (the session may be expo-audio's by then).
+   * endEngineSession (and the sleep-capture release) set today's options back
+   * before they deactivate, and so does an audio interruption (so the recovery
+   * re-activates a mixable session); setSessionMode clears it. Never rejects.
+   * Resolves JSON
+   * `{ outcome, category, mixWithOthers, otherAudioBefore, otherAudioAfter,
+   * notes? }`, `outcome` one of `took_over` (not mixable, session active),
+   * `released` (enabled: false, mixable again), `refused` (iOS refused the
+   * category or the activation; today's options were restored) or `no_engine`.
+   */
+  setAlarmTakesOverAudio(enabled: boolean): Promise<string>;
+
   // Simple fixed-duration recording API
 
   /**

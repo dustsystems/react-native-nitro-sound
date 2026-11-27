@@ -52,6 +52,10 @@ abstract class HybridSoundSpec: HybridObject() {
   
   @DoNotStrip
   @Keep
+  abstract fun setAlarmTakesOverAudio(enabled: Boolean): Promise<String>
+  
+  @DoNotStrip
+  @Keep
   abstract fun beginRecording(maxDurationSeconds: Double): Promise<Unit>
   
   @DoNotStrip
